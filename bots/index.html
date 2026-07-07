@@ -1,0 +1,213 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Мои боты — Citro Trading Bots</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="../favicon.svg" />
+
+  <link rel="stylesheet" href="../style.css" />
+  <link rel="stylesheet" href="./bots.css" />
+
+  <!-- Защита: без токена или с просроченным токеном — на страницу входа -->
+  <script src="../auth-guard.js"></script>
+</head>
+<body>
+
+  <!--
+       НАВБАР — общий для всех внутренних страниц
+ -->
+  <nav class="navbar">
+
+    <div class="logo">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>
+      </svg>
+      <span class="logo-text">Citro <span class="logo-accent">Trading Bots</span></span>
+    </div>
+
+    <div class="nav-links">
+      <a href="/main/"     class="nav-link">Главная</a>
+      <a href="/bots/"     class="nav-link active">Мои боты</a>
+      <a href="/api-keys/" class="nav-link">API-ключи</a>
+    </div>
+
+    <div class="nav-actions">
+
+      <a href="/statistics/" class="icon-btn" data-tooltip="Статистика" aria-label="Статистика">
+        <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+          <rect x="2"  y="14" width="4" height="6" rx="1"/>
+          <rect x="10" y="4"  width="4" height="16" rx="1"/>
+          <rect x="18" y="10" width="4" height="10" rx="1"/>
+        </svg>
+      </a>
+
+      <!-- Профиль с выпадающим меню по наведению -->
+      <div class="profile-wrapper">
+
+        <button class="icon-btn" aria-label="Профиль">
+          <svg width="18" height="18" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/>
+            <circle cx="12" cy="7" r="4"/>
+          </svg>
+        </button>
+
+        <div class="profile-dropdown">
+          <div class="profile-bridge"></div>
+          <div class="profile-card">
+            <p class="profile-username" id="dropdownUsername">—</p>
+            <p class="profile-id"       id="dropdownId">ID: —</p>
+            <div class="profile-sep"></div>
+            <button class="logout-btn">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"/>
+                <polyline points="16 17 21 12 16 7"/>
+                <line x1="21" y1="12" x2="9" y2="12"/>
+              </svg>
+              Выйти
+            </button>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </nav>
+
+
+  <!--
+       ОСНОВНОЙ КОНТЕНТ
+ -->
+  <main class="page-main">
+
+    <div class="page-header">
+      <div class="page-title-row">
+        <h1 class="page-title">Мои боты</h1>
+      </div>
+    </div>
+
+    <!-- Пустое состояние: ботов ещё нет -->
+    <div class="bots-empty" id="bots-empty" style="display:none">
+      <div class="empty-icon-wrap">
+        <svg class="empty-icon" viewBox="0 0 24 24" fill="none"
+             stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+          <rect x="3" y="11" width="18" height="10" rx="2"/>
+          <path d="M12 7V3M8 3h8"/>
+          <circle cx="9"  cy="16" r="1"/>
+          <circle cx="15" cy="16" r="1"/>
+        </svg>
+      </div>
+      <p class="empty-title">У вас пока нет созданных ботов</p>
+      <p class="empty-desc">
+        Создайте торгового бота на главной странице — выберите стратегию,
+        настройте параметры и запустите.
+      </p>
+      <a href="/main/" class="bots-empty-btn">Перейти к выбору бота →</a>
+    </div>
+
+    <!-- Список ботов -->
+    <div class="bots-list" id="bots-list" style="display:none">
+      <div class="bots-list-header">
+        <span class="bots-count" id="bots-count">Мои боты</span>
+      </div>
+      <div class="bot-list-cards" id="bot-list-cards"></div>
+    </div>
+
+  </main>
+
+  <!--
+       ОКНО «ИНФОРМАЦИЯ О БОТЕ» — сохранённые настройки
+ -->
+  <div class="modal-overlay" id="info-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="info-title">
+      <div class="modal-hd">
+        <h2 class="modal-title" id="info-title">Информация о боте</h2>
+        <button class="modal-close-btn" id="info-close-btn" aria-label="Закрыть" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6"  y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-bd">
+        <div class="info-rows" id="info-rows"></div>
+      </div>
+      <div class="modal-ft">
+        <button class="btn-cancel" id="info-ok-btn" type="button">Закрыть</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+       ОКНО «УДАЛЕНИЕ БОТА» — дизайн как у удаления API-ключа
+ -->
+  <div class="modal-overlay" id="delete-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="delete-title">
+      <div class="modal-hd">
+        <h2 class="modal-title" id="delete-title">Удаление бота</h2>
+        <button class="modal-close-btn" id="delete-close-btn" aria-label="Закрыть" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6"  y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-bd">
+        <p class="delete-confirm-text" id="delete-bot-text"></p>
+      </div>
+      <div class="modal-ft">
+        <button class="btn-cancel" id="delete-cancel-btn" type="button">Отмена</button>
+        <button class="btn-danger" id="delete-confirm-btn" type="button">Удалить бота</button>
+      </div>
+    </div>
+  </div>
+
+
+  <!--
+       ОКНО «ОСТАНОВИТЬ БОТА» — те же стили, что у удаления
+ -->
+  <div class="modal-overlay" id="stop-overlay" aria-hidden="true">
+    <div class="modal" role="dialog" aria-modal="true" aria-labelledby="stop-title">
+      <div class="modal-hd">
+        <h2 class="modal-title" id="stop-title">Остановить бота?</h2>
+        <button class="modal-close-btn" id="stop-close-btn" aria-label="Закрыть" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6"  y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+      <div class="modal-bd">
+        <p class="delete-confirm-text" id="stop-warn-text">
+          Обратите внимание, что при остановке бота все созданные им лимитные ордера будут удалены.
+        </p>
+        <!-- Прогресс отмены ордеров (показывается после нажатия «Остановить») -->
+        <div class="stop-progress" id="stop-progress" hidden>
+          <div class="bot-spinner"></div>
+          <p class="stop-progress-text" id="stop-progress-text">Отмена ордеров…</p>
+        </div>
+      </div>
+      <div class="modal-ft">
+        <button class="btn-cancel" id="stop-cancel-btn" type="button">Отмена</button>
+        <button class="btn-danger" id="stop-confirm-btn" type="button">Остановить</button>
+      </div>
+    </div>
+  </div>
+
+  <script src="../errors.js"></script>
+  <script src="../common.js"></script>
+  <script src="./bots.js"></script>
+
+</body>
+</html>

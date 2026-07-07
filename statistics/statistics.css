@@ -1,0 +1,684 @@
+/*
+   СТРАНИЦА «СТАТИСТИКА»
+   Каркас навбара/профиля — в style.css. Здесь — раскладка страницы,
+   карточки-итоги, фильтры, вкладки, таблицы и пагинация.
+   Тема и токены (--card, --accent, --rs …) — общие из style.css.
+ */
+
+/* Текущая страница: иконка-график в навбаре подсвечена акцентом */
+.icon-btn.active {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* Контейнер страницы — почти во всю ширину экрана: таблицы широкие */
+.page-main {
+  max-width: 1600px;
+  margin: 0 auto;
+  padding: 44px 40px 64px;
+}
+
+.page-header {
+  margin-bottom: 28px;
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-title {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+
+/*
+   КАРТОЧКИ-ИТОГИ (Общий PnL / Комиссии / Чистая прибыль / Объём)
+ */
+.stat-summary {
+  display: grid;
+  grid-template-columns: repeat(4, 1fr);
+  gap: 16px;
+  margin-bottom: 28px;
+}
+
+.stat-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 20px 22px;
+  transition: border-color .18s;
+}
+
+.stat-card:hover {
+  border-color: rgba(0, 212, 255, 0.2);
+}
+
+/* Иконка в цветной плашке — цвет задаётся модификатором карточки */
+.stat-card-icon {
+  flex-shrink: 0;
+  width: 44px;
+  height: 44px;
+  border-radius: 12px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.stat-card-icon svg {
+  width: 22px;
+  height: 22px;
+}
+
+.stat-card--pnl    .stat-card-icon { color: var(--accent); background: var(--accent-bg); }
+.stat-card--fees   .stat-card-icon { color: #f5a623;       background: rgba(245, 166, 35, 0.10); }
+.stat-card--net    .stat-card-icon { color: #22c55e;       background: rgba(34, 197, 94, 0.10); }
+.stat-card--volume .stat-card-icon { color: #60a5fa;       background: rgba(96, 165, 250, 0.10); }
+
+.stat-card-body {
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  min-width: 0;
+}
+
+.stat-card-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.stat-card-value {
+  font-size: 1.35rem;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -0.01em;
+  line-height: 1.2;
+  white-space: nowrap;        /* число и «USDT» не разрываем между строк */
+}
+
+/* Знаковая раскраска значения (P&L и чистая прибыль) */
+.val-pos  { color: #22c55e; }
+.val-neg  { color: #ff5e6b; }
+.val-zero { color: var(--muted); }
+
+
+/*
+   ФИЛЬТРЫ — выпадающие списки
+ */
+.stat-filters {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: flex-end;
+  gap: 14px;
+  margin-bottom: 22px;
+}
+
+.stat-filter {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 180px;
+}
+
+.stat-filter-label {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Кастомный выпадающий список (вместо native select — нужны иконки) */
+.stat-dd {
+  position: relative;
+}
+
+.stat-dd-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  background: var(--card);
+  color: var(--text);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  padding: 10px 12px 10px 14px;
+  font-size: 0.85rem;
+  font-family: inherit;
+  font-weight: 500;
+  cursor: pointer;
+  transition: border-color .18s, background .18s;
+}
+
+.stat-dd-btn:hover {
+  border-color: var(--muted);
+}
+
+.stat-dd.is-open .stat-dd-btn {
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* Текущее значение — в одну строку, длинное обрезаем многоточием */
+.stat-dd-value {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  overflow: hidden;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+.stat-dd-chevron {
+  width: 16px;
+  height: 16px;
+  flex-shrink: 0;
+  color: var(--muted);
+  transition: transform .18s, color .18s;
+}
+
+.stat-dd.is-open .stat-dd-chevron {
+  transform: rotate(180deg);
+  color: var(--accent);
+}
+
+/* Меню опций. Появление — как у списка выбора API-ключа (custom-select)
+   на странице настройки: opacity + сдвиг вверх, переход .15s ease. */
+.stat-dd-menu {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  z-index: 300;
+  margin: 0;
+  padding: 6px;
+  list-style: none;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  box-shadow: 0 12px 32px rgba(0, 0, 0, 0.45);
+  max-height: 290px;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dim) transparent;
+
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.stat-dd.is-open .stat-dd-menu {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+.stat-dd-menu::-webkit-scrollbar { width: 8px; }
+.stat-dd-menu::-webkit-scrollbar-thumb {
+  background: var(--dim);
+  border-radius: 8px;
+  border: 2px solid var(--surface);
+}
+
+.stat-dd-opt {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 9px 10px;
+  border-radius: 6px;
+  font-size: 0.85rem;
+  color: var(--text);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .14s, color .14s;
+}
+
+.stat-dd-opt:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+
+.stat-dd-opt.is-selected {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* Кнопка сброса фильтров — всегда видна; иконка крутится при нажатии */
+.stat-reset {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  height: 40px;
+  padding: 0 14px;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  color: var(--muted);
+  font-size: 0.8rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .18s, border-color .18s, background .18s;
+}
+
+.stat-reset:hover:not(:disabled) {
+  color: var(--text);
+  border-color: var(--muted);
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.stat-reset:disabled {
+  cursor: default;
+}
+
+.stat-reset-icon {
+  width: 14px;
+  height: 14px;
+  flex-shrink: 0;
+}
+
+/* Один оборот иконки при сбросе — как у кнопки «Обновить баланс»
+   на странице настройки (spin-once 0.8s linear). */
+.stat-reset.is-spinning .stat-reset-icon {
+  animation: bot-spin 0.8s linear;
+}
+
+
+/*
+   ВКЛАДКИ (Боты / Сделки) — сегментный переключатель
+ */
+.stat-tabs {
+  display: inline-flex;
+  gap: 4px;
+  padding: 4px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  margin-bottom: 18px;
+}
+
+.stat-tab {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  padding: 8px 18px;
+  background: none;
+  border: none;
+  border-radius: var(--rs);
+  color: var(--muted);
+  font-size: 0.85rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .18s, background .18s;
+}
+
+.stat-tab:hover {
+  color: var(--text);
+}
+
+.stat-tab.is-active {
+  color: var(--text);
+  background: var(--accent-bg);
+  box-shadow: inset 0 0 0 1px rgba(0, 212, 255, 0.22);
+}
+
+/* Счётчик строк во вкладке */
+.stat-tab-count {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  background: rgba(255, 255, 255, 0.05);
+  border-radius: 20px;
+  padding: 1px 8px;
+  min-width: 20px;
+  text-align: center;
+}
+
+.stat-tab.is-active .stat-tab-count {
+  color: var(--accent);
+  background: rgba(0, 212, 255, 0.12);
+}
+
+
+/*
+   ПАНЕЛЬ С ТАБЛИЦЕЙ
+ */
+.stat-panel {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  overflow: hidden;
+}
+
+/* Горизонтальный скролл при нехватке ширины — таблица не ломает раскладку.
+   Полосу прокрутки стилизуем под тему (WebKit + Firefox). */
+.stat-table-wrap {
+  overflow-x: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--dim) transparent;
+}
+
+.stat-table-wrap::-webkit-scrollbar {
+  height: 10px;
+}
+.stat-table-wrap::-webkit-scrollbar-track {
+  background: transparent;
+}
+.stat-table-wrap::-webkit-scrollbar-thumb {
+  background: var(--dim);
+  border-radius: 8px;
+  border: 2px solid var(--card);   /* отступ от краёв — полоса «парит» */
+}
+.stat-table-wrap::-webkit-scrollbar-thumb:hover {
+  background: var(--muted);
+}
+
+.stat-table-wrap[hidden] { display: none; }
+
+/* table-layout: fixed + width:100% → ВСЕ колонки одинаковой ширины и с
+   одинаковыми промежутками; содержимое центрируем. Длинные ячейки (заголовки,
+   дата) переносятся на 2 строки, числа держим в одну строку (см. ниже).
+   min-width — чтобы на узких экранах колонки не сжимались до нечитаемых, а
+   появлялся горизонтальный скролл (полоса стилизована выше). */
+.stat-table {
+  width: 100%;
+  min-width: 920px;
+  table-layout: fixed;
+  border-collapse: collapse;
+  font-size: 0.9rem;     /* единый размер для обеих таблиц — максимально крупно */
+}
+
+.stat-table thead th {
+  text-align: center;
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  padding: 14px 14px;
+  background: var(--surface);
+  border-bottom: 1px solid var(--border);
+}
+
+.stat-table tbody td {
+  height: 58px;            /* единая высота строк в обеих таблицах: в «Сделках»
+                              дата переносится в 2 строки — резервируем место,
+                              одиночные строки центрируются вертикально */
+  padding: 9px 14px;
+  line-height: 1.3;
+  text-align: center;
+  color: var(--text);
+  border-bottom: 1px solid var(--border);
+  vertical-align: middle;
+}
+
+/* Последняя строка без нижней границы — край совпадает со скруглением панели */
+.stat-table tbody tr:last-child td {
+  border-bottom: none;
+}
+
+.stat-table tbody tr {
+  transition: background .14s;
+}
+
+.stat-table tbody tr:hover {
+  background: rgba(255, 255, 255, 0.02);
+}
+
+/* Числовые колонки — моноширинные цифры, в одну строку (не переносим число) */
+.stat-table .col-num {
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* Идентификатор — тоже в одну строку (короткий, с многоточием) */
+.stat-table .col-id {
+  white-space: nowrap;
+}
+
+/* Идентификаторы (UUID/биржевой id) — моноширинный приглушённый текст */
+.col-id {
+  font-family: ui-monospace, 'SF Mono', Menlo, Consolas, monospace;
+  font-size: 0.82rem;
+  color: var(--muted);
+  cursor: default;
+}
+
+/* Название бота — основной текст */
+.col-name {
+  font-weight: 500;
+}
+
+/* Денежные значения */
+.money-pos  { color: #22c55e; font-weight: 500; }
+.money-neg  { color: #ff5e6b; font-weight: 500; }
+.money-zero { color: var(--muted); }
+.money-fee  { color: #f5a623; }
+
+/* Торговая пара: иконки + код в одну строку (компактно, не переносится) */
+.stat-pair {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  white-space: nowrap;
+}
+
+.stat-coin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+
+/* Бейджи статуса бота */
+.stat-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+.stat-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.stat-badge--active   { color: #22c55e; background: rgba(34, 197, 94, 0.10);  border: 1px solid rgba(34, 197, 94, 0.28); }
+.stat-badge--inactive { color: #ff5e6b; background: rgba(255, 94, 107, 0.10); border: 1px solid rgba(255, 94, 107, 0.28); }
+.stat-badge--error    { color: #f5a623; background: rgba(245, 166, 35, 0.10); border: 1px solid rgba(245, 166, 35, 0.30); }
+.stat-badge--deleted  { color: #8a94a6; background: rgba(138, 148, 166, 0.10); border: 1px solid rgba(138, 148, 166, 0.26); }
+
+
+/* Сторона сделки (Покупка / Продажа) */
+.stat-side {
+  display: inline-flex;
+  align-items: center;
+  font-size: 0.76rem;
+  font-weight: 600;
+  padding: 4px 10px;
+  border-radius: var(--rs);
+  white-space: nowrap;
+}
+
+.stat-side--buy  { color: #22c55e; background: rgba(34, 197, 94, 0.10);  border: 1px solid rgba(34, 197, 94, 0.24); }
+.stat-side--sell { color: #ff8d97; background: rgba(255, 94, 107, 0.08); border: 1px solid rgba(255, 94, 107, 0.22); }
+
+
+/*
+   ПАГИНАЦИЯ
+ */
+.stat-pager {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 12px;
+  padding: 14px 18px;
+  border-top: 1px solid var(--border);
+}
+
+.stat-pager[hidden] { display: none; }
+
+.stat-pager-info {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+.stat-pager-controls {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.stat-page-btn {
+  min-width: 34px;
+  height: 34px;
+  padding: 0 10px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  color: var(--muted);
+  font-size: 0.82rem;
+  font-weight: 500;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .16s, border-color .16s, background .16s;
+}
+
+.stat-page-btn:hover:not(:disabled):not(.is-current) {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+.stat-page-btn.is-current {
+  color: var(--accent);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+  cursor: default;
+}
+
+.stat-page-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+/* Многоточие между группами номеров страниц */
+.stat-page-gap {
+  color: var(--muted);
+  padding: 0 2px;
+  user-select: none;
+}
+
+
+/*
+   СОСТОЯНИЯ ПАНЕЛИ: загрузка / ошибка / пусто
+ */
+.stat-state {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  gap: 14px;
+  padding: 64px 24px;
+  color: var(--muted);
+}
+
+.stat-state[hidden] { display: none; }
+
+.stat-state p {
+  font-size: 0.88rem;
+  line-height: 1.5;
+}
+
+.stat-state svg {
+  width: 40px;
+  height: 40px;
+  color: var(--dim);
+}
+
+.stat-retry {
+  margin-top: 4px;
+  padding: 9px 20px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--rs);
+  font-size: 0.82rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s;
+}
+
+.stat-retry:hover {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+}
+
+/* Спиннер загрузки */
+.bot-spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: bot-spin 0.8s linear infinite;
+}
+
+@keyframes bot-spin {
+  to { transform: rotate(360deg); }
+}
+
+
+/*
+   АДАПТИВ
+ */
+@media (max-width: 1080px) {
+  .stat-summary { grid-template-columns: repeat(2, 1fr); }
+}
+
+/* Планшеты: фильтры в 2 ряда, поля растягиваются по ширине */
+@media (max-width: 720px) {
+  .page-main { padding: 36px 22px 52px; }
+  .stat-filter { min-width: 0; flex: 1 1 calc(50% - 7px); }
+}
+
+/* Телефоны: всё в одну колонку */
+@media (max-width: 560px) {
+  .page-main { padding: 30px 16px 44px; }
+  .stat-summary { grid-template-columns: 1fr; }
+  .stat-filter { flex: 1 1 100%; }
+  .stat-reset { flex: 1 1 100%; justify-content: center; }
+  .stat-tabs { display: flex; width: 100%; }
+  .stat-tab { flex: 1; justify-content: center; }
+  .stat-pager { justify-content: center; }
+  .stat-card-value { font-size: 1.25rem; }
+}

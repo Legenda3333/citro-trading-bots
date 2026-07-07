@@ -1,0 +1,1520 @@
+/*
+   НАВБАР: добавляем nav-left для кнопки «назад»
+   (остальные стили навбара — в style.css)
+ */
+.nav-left {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+/* Кнопка «назад» — ссылка, стилизованная под icon-btn */
+.back-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;
+  height: 38px;
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  color: var(--muted);
+  text-decoration: none;
+  flex-shrink: 0;
+  transition: color .2s, border-color .2s, background .2s;
+}
+
+.back-btn:hover {
+  color: var(--text);
+  border-color: var(--accent);
+  background: var(--accent-bg);
+}
+
+
+/*
+   УПРОЩЁННЫЙ НАВБАР ДЛЯ СТРАНИЦЫ БОТА
+   Меньше высота, нет иконок профиля/статистики
+ */
+.navbar--bot {
+  height: 60px;
+  padding: 0 36px;
+  justify-content: space-between; /* лого слева, X справа — без nav-links посередине */
+}
+
+/* Левая часть навбара: иконка молнии + заголовок */
+.bot-nav-left {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+/* Заголовок "Создание бота" */
+.bot-nav-title {
+  font-size: 0.95rem;
+  font-weight: 600;
+  color: var(--text);
+  letter-spacing: 0.01em;
+}
+
+/* Кнопка-иконка выхода (X) справа — стиль как у icon-btn, но ссылка */
+.btn-exit-bot {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 38px;   /* совпадает с размером icon-btn на главной */
+  height: 38px;
+  color: var(--muted);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  text-decoration: none;
+  transition: color .2s, border-color .2s, background .2s;
+  flex-shrink: 0;
+}
+
+.btn-exit-bot:hover {
+  color: var(--text);
+  border-color: #ff5e6b;
+  background: rgba(255, 94, 107, 0.08);
+}
+
+
+/*
+   РАБОЧАЯ ОБЛАСТЬ: два блока рядом
+   48px — новая высота навбара
+ */
+.bot-workspace {
+  display: flex;
+  height: calc(100vh - 60px);
+  overflow: hidden;
+}
+
+
+/*
+   ЛЕВЫЙ БЛОК: ГРАФИК
+ */
+.chart-panel {
+  width: 42%;
+  flex-shrink: 0;
+  display: flex;
+  flex-direction: column;
+  background: var(--card);
+  border-right: 1px solid var(--border);
+}
+
+/* Шапка графика: название пары, цена, кнопки интервала */
+.chart-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 16px 20px 14px;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Строка с иконкой монеты + названием пары */
+.pair-name-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Иконка монеты CITRO */
+.pair-coin-icon {
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pair-name {
+  font-size: 1rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: 0.03em;
+}
+
+/* Разделитель "/" между символами пары — приглушённый */
+.pair-name span {
+  color: var(--muted);
+  font-weight: 400;
+  margin: 0 2px;
+}
+
+/* Блок с ценой и изменением в % */
+.pair-price {
+  display: flex;
+  align-items: baseline;
+  gap: 10px;
+  margin-top: 5px;
+}
+
+.price-value {
+  font-size: 1.25rem;
+  font-weight: 700;
+  color: var(--text);
+  font-variant-numeric: tabular-nums; /* цифры одной ширины — не "прыгают" */
+}
+
+.price-change {
+  font-size: 0.78rem;
+  font-weight: 600;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.price-change.positive {
+  color: #22c55e;
+  background: rgba(34, 197, 94, 0.1);
+}
+
+.price-change.negative {
+  color: #ef4444;
+  background: rgba(239, 68, 68, 0.1);
+}
+
+/* Кнопки выбора таймфрейма — плавают поверх графика (левый верхний угол) */
+.interval-tabs {
+  position: absolute;
+  top: 12px;
+  left: 12px;
+  z-index: 10;
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  padding: 3px;
+}
+
+.interval-tab {
+  padding: 4px 11px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  font-size: 0.72rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+
+.interval-tab:hover {
+  color: var(--text);
+  background: var(--border);
+}
+
+/* Активная вкладка — заливка акцентом */
+.interval-tab.active {
+  background: var(--accent);
+  color: #0e1117;
+}
+
+
+/*
+   ПЕРЕКЛЮЧАТЕЛЬ ВИДА: график / стакан / таблица
+   3 иконки-кнопки в правой части шапки графика
+ */
+.view-tabs {
+  display: flex;
+  gap: 2px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  padding: 3px;
+  flex-shrink: 0;
+}
+
+.view-tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 34px;
+  height: 28px;
+  border: none;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .15s, background .15s;
+}
+
+.view-tab:hover {
+  color: var(--text);
+  background: var(--border);
+}
+
+/* Активная иконка — заливка акцентом */
+.view-tab.active {
+  background: var(--accent);
+  color: #0e1117;
+}
+
+/* Обёртка иконки: нужна для позиционирования тултипа */
+.view-tab-wrap {
+  position: relative;
+  display: flex;
+}
+
+/* Тултип — появляется снизу под иконкой, стиль совпадает с .info-tooltip */
+.view-tab-tooltip {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%) translateY(-4px);
+  white-space: nowrap;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 7px 12px;
+  font-size: 0.78rem;
+  color: var(--muted);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 300;
+  pointer-events: none;
+  opacity: 0;
+  transition: opacity .18s ease, transform .18s ease;
+}
+
+/* Стрелочка сверху тултипа — указывает на иконку */
+.view-tab-tooltip::before {
+  content: '';
+  position: absolute;
+  top: -6px;
+  left: 50%;
+  transform: translateX(-50%) rotate(45deg);
+  width: 10px;
+  height: 10px;
+  background: var(--surface);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+.view-tab-wrap:hover .view-tab-tooltip {
+  opacity: 1;
+  transform: translateX(-50%) translateY(0);
+}
+
+
+/*
+   СЛОИ "СТАКАН" И "ТАБЛИЦА"
+   Лежат поверх графика, занимают всю область.
+   Показывается только активный (остальные скрыты).
+ */
+.side-view {
+  position: absolute;
+  inset: 0;
+  z-index: 35; /* выше chart-loading (30), чтобы стакан/таблица были видны даже во время загрузки */
+  background: var(--card);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+/* Атрибут hidden должен перекрывать display:flex */
+.side-view[hidden] {
+  display: none;
+}
+
+/*
+   СТАКАН ОРДЕРОВ
+   Аски сверху, цена последней сделки посередине, биды снизу.
+   Обе зоны скроллятся независимо.
+ */
+.orderbook {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  height: 100%;
+  font-size: 1.02rem;               /* как у полей настроек бота */
+  font-variant-numeric: tabular-nums; /* цифры одной ширины — не дёргаются */
+}
+
+/* Заголовки колонок — цвет как у .section-label, шрифт как у .gt-head */
+.ob-head {
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 8px 14px;
+  color: #60a5fa;       /* совпадает с "Основные настройки", "Депозит" и т.д. */
+  font-size: 0.74rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+.ob-head span:nth-child(2) { text-align: center; } /* "Кол-во" — по центру */
+.ob-head span:nth-child(3) { text-align: right; }  /* "Итого" — справа */
+
+.ob-head i {
+  font-style: normal;
+  /* Тот же синий, что и заголовок, но приглушённый — единая цветовая гамма */
+  color: #60a5fa;
+  opacity: 0.55;
+}
+
+/* Зоны асков и бидов: равная высота, независимый скролл */
+.ob-asks,
+.ob-bids {
+  flex: 1;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.ob-asks::-webkit-scrollbar,
+.ob-bids::-webkit-scrollbar { width: 4px; }
+.ob-asks::-webkit-scrollbar-thumb,
+.ob-bids::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Аски прижимаем к низу (лучший аск — у центральной цены).
+   ::before с margin-top:auto толкает строки вниз, но не ломает скролл. */
+.ob-asks { display: flex; flex-direction: column; }
+.ob-asks::before { content: ''; margin-top: auto; }
+
+/* Строка стакана */
+.ob-row {
+  position: relative;
+  display: grid;
+  grid-template-columns: 1fr 1fr 1fr;
+  gap: 8px;
+  padding: 4px 14px;    /* чуть больше при увеличенном шрифте */
+}
+
+.ob-row:hover { background: rgba(255, 255, 255, 0.04); }
+
+/* Фоновая полоса глубины — растёт от правого края */
+.ob-bar {
+  position: absolute;
+  top: 0;
+  right: 0;
+  height: 100%;
+  z-index: 0;
+}
+
+.ob-ask .ob-bar { background: rgba(239, 68, 68, 0.12); }
+.ob-bid .ob-bar { background: rgba(34, 197, 94, 0.12); }
+
+/* Текст поверх полосы глубины */
+.ob-row span:not(.ob-bar) { position: relative; z-index: 1; }
+
+.ob-price  { text-align: left; }
+.ob-amount { text-align: center; color: var(--text); } /* цвет как в таблице ордеров */
+.ob-total  { text-align: right;  color: var(--text); } /* цвет как в таблице ордеров */
+
+.ob-ask .ob-price { color: #ef4444; } /* красный — продажа */
+.ob-bid .ob-price { color: #22c55e; } /* зелёный — покупка */
+
+/* Центральная строка: цена последней сделки + спред */
+.ob-mid {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 14px;
+  border-top: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  background: var(--bg);
+  flex-shrink: 0;
+}
+
+/* Спред прижат вправо через margin-left: auto */
+.ob-mid-spread {
+  margin-left: auto;
+  /* font-size не задаём — наследует 1.02rem из .orderbook */
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.ob-mid-price {
+  font-size: 1.15rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+.ob-mid-price.is-up   { color: #22c55e; }
+.ob-mid-price.is-down { color: #ef4444; }
+
+.ob-mid-usd {
+  font-size: 0.72rem;
+  color: var(--dim);
+}
+
+/* Заглушка загрузки стакана — спиннер + текст по центру */
+.ob-loading {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+  background: var(--card);
+  z-index: 2;
+}
+
+
+/*
+   ТАБЛИЦА ОРДЕРОВ СЕТКИ
+   Предварительный список лимитных ордеров,
+   которые выставит бот по текущим настройкам.
+ */
+
+/* Подсказка "заполните поля" — по центру слоя */
+.gt-message {
+  margin: auto;
+  max-width: 340px;
+  padding: 0 24px;
+  text-align: center;
+  color: var(--muted);
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+/* Контейнер таблицы заполняет весь слой */
+.gt-table {
+  flex: 1;
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+}
+
+/* Атрибут hidden должен перекрывать display:flex */
+.gt-table[hidden] { display: none; }
+
+/* Заголовки колонок — стиль совпадает с .ob-head */
+.gt-head {
+  display: grid;
+  /* 60px — ровно по ширине badge Sell/Buy;
+     1fr  — «Цена» занимает оставшееся место между колонками;
+     var  — ширина «Сделки» подстраивается под самое широкое значение
+     (считается в syncTradeColumnWidth), по умолчанию 200px.
+     Один шаблон в gt-head и gt-row держит колонки и зазоры выровненными. */
+  grid-template-columns: 60px 1fr var(--gt-trade-w, 200px);
+  gap: 16px;
+  padding: 10px 16px;
+  font-size: 0.74rem;
+  font-weight: 600;
+  color: #60a5fa;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  border-bottom: 1px solid var(--border);
+  flex-shrink: 0;
+}
+
+/* Все три заголовка — по центру своей колонки */
+.gt-head span:nth-child(1) { text-align: center; }
+.gt-head span:nth-child(2) { text-align: center; }
+.gt-head span:nth-child(3) { text-align: center; }
+
+.gt-head i {
+  font-style: normal;
+  color: #60a5fa;        /* тот же синий, приглушённый как в .ob-head i */
+  opacity: 0.55;
+}
+
+/* Список строк — скроллится */
+.gt-rows {
+  flex: 1;
+  min-height: 0;
+  overflow-y: auto;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.gt-rows::-webkit-scrollbar       { width: 4px; }
+.gt-rows::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Одна строка ордера */
+.gt-row {
+  display: grid;
+  grid-template-columns: 60px 1fr var(--gt-trade-w, 200px); /* совпадает с gt-head */
+  gap: 16px;
+  align-items: center;
+  padding: 8px 16px;
+  font-size: 1.02rem;
+  font-variant-numeric: tabular-nums;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.03);
+}
+
+.gt-row:hover { background: rgba(255, 255, 255, 0.04); }
+
+/* Бейдж типа ордера: Buy (зелёный) / Sell (красный) */
+.gt-type {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  justify-self: center; /* badge по центру своей 60px-колонки */
+  padding: 3px 8px;
+  border-radius: 4px;
+  font-size: 0.85rem;
+  font-weight: 600;
+}
+
+.gt-sell { color: #ef4444; background: rgba(239, 68, 68, 0.10); }
+.gt-buy  { color: #22c55e; background: rgba(34, 197, 94, 0.10); }
+
+.gt-price { color: var(--text); text-align: center; } /* "Цена" — по центру */
+
+/* Сделка: иконка + сумма → иконка + сумма; по центру своей колонки */
+.gt-trade {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  color: var(--muted);
+  white-space: nowrap;
+  overflow: hidden;
+}
+
+.gt-coin {
+  width: 18px;    /* чуть крупнее под 1.02rem */
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.gt-amt { color: var(--text); }
+
+.gt-arrow {
+  color: var(--muted);  /* чуть ярче — стрелка теперь крупная, dim слишком бледно */
+  margin: 0 3px;        /* больше воздуха вокруг длинной стрелки */
+  flex-shrink: 0;
+}
+
+/* Состояние загрузки таблицы — спиннер + текст по центру слоя */
+.gt-loading {
+  margin: auto;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  color: var(--muted);
+  font-size: 0.85rem;
+}
+
+/* Атрибут hidden должен перекрывать display:flex */
+.gt-loading[hidden] { display: none; }
+
+
+/*
+   ИНФО-БЛОК ПЕРЕД КНОПКОЙ СОЗДАНИЯ
+   Показывает, какая монета на какую обменяется.
+ */
+.bot-summary {
+  margin-top: 24px;
+  padding: 14px 16px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: var(--rs);
+}
+
+.bot-summary-title {
+  display: block;
+  font-size: 0.9rem;
+  color: var(--muted);
+  margin-bottom: 10px;
+  text-align: center;
+}
+
+/* Строка обмена: иконка сумма → иконка сумма */
+.bot-summary-swap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  flex-wrap: wrap;
+  font-size: 1.02rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+.bot-summary-part {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.bot-summary-coin {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.bot-summary-arrow {
+  color: var(--accent);
+  flex-shrink: 0;
+}
+
+.bot-summary-none {
+  color: var(--muted);
+  font-size: 0.9rem;
+}
+
+
+/*
+   КОНТЕЙНЕР ГРАФИКА
+   flex: 1 — занимает всё оставшееся место
+ */
+.chart-wrapper {
+  flex: 1;
+  position: relative;
+  min-height: 0; /* без этого flex-дочерний элемент игнорирует overflow */
+}
+
+/* Сюда Lightweight Charts вставит свой canvas */
+#chart {
+  width: 100%;
+  height: 100%;
+}
+
+/* Курсором управляет JS: над областью свечей — none, над шкалами — default.
+   Класс .no-cursor добавляется/снимается в setupCrosshairMarker(). */
+#chart.no-cursor,
+#chart.no-cursor * {
+  cursor: none;
+}
+
+/* Маркер "+" — следует за перекрестьем, заменяет скрытый курсор.
+   transform центрирует "+" точно на точке курсора.
+   pointer-events:none — маркер не перехватывает события мыши. */
+.crosshair-marker {
+  position: absolute;
+  z-index: 8;
+  color: #00d4ff;          /* цвет совпадает с перекрестьем */
+  pointer-events: none;
+  transform: translate(-50%, -50%);
+  display: none;           /* скрыт, пока мышь не над графиком (показывает JS) */
+}
+
+/* display:block убирает baseline gap — без него браузер добавляет
+   ~4px пространства под SVG (как под строчную букву), div становится
+   выше SVG, и центрирование через translate(-50%,-50%) смещается вверх */
+.crosshair-marker svg {
+  display: block;
+}
+
+/* Оверлей загрузки — поверх графика пока идёт запрос.
+   z-index: 30 — выше canvas-слоёв Lightweight Charts (они не имеют z-index
+   или имеют низкие значения), но и выше interval-tabs (z-index: 10).
+   Без явного z-index LW Charts ставит свой canvas поверх этого div,
+   и спиннер с текстом оказывается невидимым за тёмным пустым canvas. */
+.chart-loading {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  background: var(--card);
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* Крутящийся спиннер */ 
+.loading-spinner {
+  width: 28px;
+  height: 28px;
+  border: 2px solid var(--border);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spin 0.75s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
+
+/* Сообщение об ошибке внутри контейнера графика */
+.chart-error {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+
+/*
+   ПРАВЫЙ БЛОК: НАСТРОЙКИ
+   overflow-y: auto — скроллится при маленьком экране
+ */
+.settings-panel {
+  flex: 1;
+  overflow-y: auto;
+  padding: 28px 32px 40px;
+  scrollbar-width: thin;
+  scrollbar-color: var(--border) transparent;
+}
+
+.settings-panel::-webkit-scrollbar       { width: 4px; }
+.settings-panel::-webkit-scrollbar-track { background: transparent; }
+.settings-panel::-webkit-scrollbar-thumb { background: var(--border); border-radius: 2px; }
+
+/* Заголовок правой панели */
+.settings-header {
+  margin-bottom: 20px;
+}
+
+.settings-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  margin-bottom: 4px;
+}
+
+.settings-title {
+  font-size: 1.1rem;
+  font-weight: 700;
+  color: var(--text);
+}
+
+/* Бейдж "Spot" рядом с названием бота */
+.bot-type-badge {
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  padding: 3px 9px;
+  border-radius: 20px;
+}
+
+.settings-subtitle {
+  font-size: 0.8rem;
+  color: var(--muted);
+}
+
+/* Блок с описанием стратегии */
+.settings-desc {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.7;
+  padding: 12px 14px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(0, 212, 255, 0.12);
+  border-radius: var(--rs);
+  margin-bottom: 4px;
+}
+
+
+/*
+   СЕКЦИИ НАСТРОЕК
+ */
+.settings-section {
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+  padding-top: 22px;
+  margin-top: 22px;
+  border-top: 1px solid var(--border);
+}
+
+/* Заголовок секции — выделен цветом для визуального разграничения блоков */
+.section-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: #60a5fa;          /* светло-синий, контрастный на тёмном фоне */
+}
+
+/* "(необязательно)" рядом с заголовком секции */
+.optional-label {
+  font-weight: 400;
+  text-transform: none;
+  letter-spacing: 0;
+  color: var(--dim);
+  font-size: 0.68rem;
+}
+
+/*
+   БЛОК "ДОСТУПНЫЙ БАЛАНС"
+   Без фона — вписывается в панель настроек
+ */
+
+/* Строка заголовка: надпись + иконка ? + кнопка обновления */
+.balance-header {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  margin-bottom: 10px;
+}
+
+.balance-title {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  margin-right: 2px;
+}
+
+/* Кнопка обновления баланса */
+.balance-refresh-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  margin-left: 2px;
+  transition: color .18s;
+  flex-shrink: 0;
+}
+
+.balance-refresh-btn:hover {
+  color: var(--accent);
+}
+
+/* Анимация вращения иконки при нажатии */
+@keyframes spin-once {
+  from { transform: rotate(0deg); }
+  to   { transform: rotate(360deg); }
+}
+
+.balance-refresh-btn.is-spinning svg {
+  animation: spin-once 0.8s linear;
+}
+
+/* Два отдельных блока на одной строке */
+.balance-items {
+  display: flex;
+  gap: 8px;
+}
+
+.balance-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 10px 20px;
+  min-width: 140px;
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+}
+
+.balance-item-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.balance-item-info {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+
+.balance-item-amount {
+  font-size: 1.02rem;
+  font-weight: 600;
+  color: var(--text);
+  line-height: 1.2;
+}
+
+.balance-item-ticker {
+  font-size: 0.68rem;
+  color: var(--dim);
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+
+/* Два поля в одну строку */
+.field-row {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 12px;
+}
+
+/* Ошибка режима «USDT + CITRO» лежит вне .field-row, поэтому её отделяет gap
+   секции (14px) и она оказывалась ниже, чем ошибка одиночного поля (там — gap
+   field-group 6px + margin 4px = 10px от инпута). Пустые ошибки теперь
+   display:none, поэтому низ .field-row = инпуты; выравниваем: 14 + (-4) → 10px. */
+#deposit-both-error:not(:empty) {
+  margin-top: -4px;
+}
+
+/* Одно поле: лейбл + инпут */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 0.9rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+/* Строка: лейбл + иконка ⓘ рядом */
+.field-label-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+
+/* Единица измерения рядом с лейблом (USDT, шт.) */
+.field-unit {
+  color: var(--dim);
+  font-size: 0.72rem;
+  margin-left: 2px;
+}
+
+/* Инпут — размеры совпадают с полями на странице авторизации */
+.field-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  padding: 13px 16px;
+  color: var(--text);
+  font-size: 1.02rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.field-input::placeholder {
+  color: var(--dim);
+}
+
+.field-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+}
+
+/* .field-input.is-invalid — общее правило в style.css */
+
+/* Числовые инпуты используют type="text", поэтому правила для type="number" не нужны */
+
+
+/*
+   КАСТОМНЫЙ ВЫПАДАЮЩИЙ СПИСОК
+   Используется и для API-ключей, и для депозита
+ */
+.custom-select {
+  position: relative;
+}
+
+/* Кнопка-триггер (то, что видно всегда) */
+.custom-select-btn {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+  padding: 13px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  color: var(--text);
+  font-size: 1.02rem;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  transition: border-color .18s, box-shadow .18s;
+}
+
+.custom-select-btn:hover,
+.custom-select.is-open .custom-select-btn {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+}
+
+/* Шеврон — поворачивается при открытии */
+.select-arrow {
+  color: var(--muted);
+  flex-shrink: 0;
+  transition: transform .2s;
+}
+
+.custom-select.is-open .select-arrow {
+  transform: rotate(180deg);
+}
+
+/* Текст-заглушка до выбора значения */
+.select-placeholder {
+  color: var(--dim);
+}
+
+/* Контейнер иконка + текст в триггере (депозит) */
+.select-value {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+.select-val-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Выпадающий список — скрыт по умолчанию */
+.custom-select-list {
+  position: absolute;
+  top: calc(100% + 4px);
+  left: 0;
+  right: 0;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.35);
+  z-index: 200;
+  overflow: hidden;
+
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(-4px);
+  transition: opacity .15s ease, transform .15s ease;
+}
+
+.custom-select.is-open .custom-select-list {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* Пункт списка — общий стиль */
+.select-item {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  padding: 13px 16px;
+  background: none;
+  border: none;
+  color: var(--text);
+  font-size: 1.02rem;
+  font-family: inherit;
+  cursor: pointer;
+  text-align: left;
+  text-decoration: none;
+  transition: background .15s;
+}
+
+.select-item:hover {
+  background: var(--card);
+}
+
+/* Активный (выбранный) пункт */
+.select-item.is-active {
+  color: var(--accent);
+  background: var(--accent-bg);
+}
+
+/* Пункт "Добавить новый API ключ" */
+.select-item--action {
+  color: var(--accent);
+  border-top: 1px solid var(--border);
+}
+
+.select-item--action:hover {
+  background: var(--accent-bg);
+}
+
+/* Иконка монеты внутри пункта списка */
+.option-icon {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+/* Два иконки рядом (USDT + CITRO): вторая немного перекрывает первую */
+.option-icons-pair {
+  display: flex;
+  align-items: center;
+  flex-shrink: 0;
+}
+
+.option-icon--overlap {
+  margin-left: -6px;
+  box-shadow: -2px 0 0 var(--surface); /* разделяет иконки визуально */
+}
+
+
+/*
+   СТАТИЧНАЯ ТОРГОВАЯ ПАРА
+ */
+.pair-static {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 13px 16px;
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  user-select: none;      /* нельзя выделить — поле только для чтения */
+}
+
+.pair-static-icon {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.pair-static-name {
+  flex: 1;
+  font-size: 1.02rem;  /* совпадает с .custom-select-btn и .field-input */
+  font-weight: 500;
+  color: var(--text);
+}
+
+/* Бейдж "Spot" внутри поля */
+.pair-static-badge {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.07em;
+  text-transform: uppercase;
+  background: rgba(59, 130, 246, 0.12);
+  color: #60a5fa;
+  border: 1px solid rgba(59, 130, 246, 0.25);
+  padding: 2px 8px;
+  border-radius: 20px;
+}
+
+
+/* (deposit-tabs заменён на custom-select — стили выше) */
+
+
+/*
+   СООБЩЕНИЯ ОБ ОШИБКЕ ПОД ПОЛЯМИ
+   Общие правила .field-error — в style.css
+   (единый механизм и перенос длинных сообщений на всех страницах)
+ */
+
+
+/*
+   ИКОНКА ИНФОРМАЦИИ + ВСПЛЫВАЮЩИЙ БЛОК
+ */
+.info-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+  margin-left: 2px;
+}
+
+.info-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  transition: color .18s;
+}
+
+.info-btn:hover {
+  color: var(--accent);
+}
+
+/* Блок с описанием — скрыт по умолчанию, появляется НАД иконкой */
+.info-tooltip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  top: auto;
+  left: 0;
+  width: 290px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 13px 15px;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--muted);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px); /* чуть ниже, поднимается при появлении */
+  transition: opacity .18s ease, transform .18s ease;
+}
+
+/* Стрелочка-треугольник снизу тултипа — указывает на иконку */
+.info-tooltip::before {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  top: auto;
+  left: 8px;
+  width: 10px;
+  height: 10px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+
+.info-wrapper:hover .info-tooltip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* Компактный вариант — для короткой подписи (напр. «Обновить баланс»):
+   ширина по содержимому, в одну строку. Стиль (фон/рамка/стрелка) — общий. */
+.info-tooltip--compact {
+  width: auto;
+  white-space: nowrap;
+  line-height: 1.4;
+  padding: 8px 12px;
+}
+
+/* JS добавляет этот класс когда тултипу нет места над иконкой */
+.tooltip-below .info-tooltip {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translateY(-4px);
+}
+
+.tooltip-below .info-tooltip::before {
+  bottom: auto;
+  top: -6px;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+
+/*
+   КНОПКА СОЗДАНИЯ БОТА
+ */
+.settings-action {
+  margin-top: 28px;
+  padding-top: 24px;
+  border-top: 1px solid var(--border);
+}
+
+.create-btn {
+  width: 100%;
+  padding: 13px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--rs);
+  font-size: 1.02rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+}
+
+.create-btn:disabled {
+  opacity: 0.4;
+  cursor: not-allowed;
+}
+
+.create-btn:hover:not(:disabled) {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+  box-shadow: 0 0 24px rgba(0, 212, 255, 0.2);
+}
+
+
+/*
+   МОДАЛ ПОДТВЕРЖДЕНИЯ СОЗДАНИЯ БОТА
+   Каркас модала — общие правила в style.css.
+   Здесь только содержимое: сводка, загрузка, ошибка.
+ */
+
+/* Чуть шире стандартного окна: в подвале три кнопки */
+.modal--confirm {
+  max-width: 540px;
+}
+
+/* Состояние загрузки внутри модала */
+.confirm-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  padding: 26px 0;
+  color: var(--muted);
+  font-size: 0.82rem;
+}
+
+/* Атрибут hidden должен перекрывать display:flex */
+.confirm-loading[hidden] { display: none; }
+
+/* Сообщение об ошибке получения данных */
+.confirm-error {
+  text-align: center;
+  padding: 18px 0;
+  color: #ff5e6b;
+  font-size: 0.85rem;
+  line-height: 1.6;
+}
+
+/* Строки сводки: метка слева, значение справа */
+.confirm-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+
+/* Разделитель между строками (кроме первой) */
+.confirm-row + .confirm-row {
+  border-top: 1px solid var(--border);
+}
+
+.confirm-row-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.confirm-row-value {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere; /* длинное название не растянет окно */
+}
+
+/* Блок обмена — та же стилистика, что инфо-блок под настройками */
+.confirm-swap-box {
+  margin-top: 14px;
+  padding: 14px 16px;
+  background: var(--accent-bg);
+  border: 1px solid rgba(0, 212, 255, 0.18);
+  border-radius: var(--rs);
+}
+
+/* Мини-иконка монеты в строке сводки — выравнивается по тексту */
+.confirm-coin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  vertical-align: -3px;
+  margin-right: 5px;
+}
+
+/* Принятие рисков: галочка + текст */
+.confirm-risk {
+  display: flex;
+  align-items: flex-start;
+  gap: 10px;
+  margin-top: 16px;
+  cursor: pointer;
+  user-select: none;
+}
+
+.confirm-risk input {
+  width: 15px;
+  height: 15px;
+  margin-top: 2px;          /* выравнивание по первой строке текста */
+  accent-color: var(--accent);
+  cursor: pointer;
+  flex-shrink: 0;
+}
+
+.confirm-risk span {
+  font-size: 0.78rem;
+  color: var(--muted);
+  line-height: 1.6;
+}
+
+/* Предупреждение о втором боте на том же ключе — информационное (янтарное) */
+.confirm-keywarn {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: rgba(251, 191, 36, 0.08);
+  border: 1px solid rgba(251, 191, 36, 0.28);
+  border-radius: var(--rs);
+  color: #fcd34d;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.confirm-keywarn[hidden] { display: none; }
+
+/* Ошибка отправки бота на сервер */
+.confirm-submit-error {
+  margin-top: 14px;
+  padding: 10px 12px;
+  background: rgba(255, 94, 107, 0.08);
+  border: 1px solid rgba(255, 94, 107, 0.22);
+  border-radius: var(--rs);
+  color: #ff5e6b;
+  font-size: 0.82rem;
+  line-height: 1.5;
+  text-align: center;
+}
+
+.confirm-submit-error[hidden] { display: none; }
+
+
+/*
+   АДАПТИВНОСТЬ
+   Рабочая область «график | настройки» (два блока в ряд) на планшетах и
+   телефонах перестраивается вертикально: сверху — график/стакан/таблица
+   фиксированной высоты, снизу — настройки; страница получает обычную
+   прокрутку (вместо height:100vh + overflow:hidden). Десктоп не затронут.
+ */
+@media (max-width: 860px) {
+  .navbar--bot { padding: 0 16px; }
+
+  .bot-workspace {
+    flex-direction: column;
+    height: auto;
+    overflow: visible;
+  }
+  .chart-panel {
+    width: 100%;
+    height: 320px;
+    flex-shrink: 0;
+    overflow-x: clip;      /* тултипы переключателя вида не расширяют страницу */
+    border-right: none;
+    border-bottom: 1px solid var(--border);
+  }
+  .settings-panel {
+    flex: none;
+    width: 100%;
+    /* overflow-x: clip — боковые тултипы-подсказки (position:absolute) не
+       «раздвигают» ширину страницы за пределы экрана; overflow-y: visible —
+       панель не скроллит по вертикали, прокручивается вся страница. */
+    overflow-x: clip;
+    overflow-y: visible;
+    padding: 24px 18px 44px;
+  }
+}
+
+@media (max-width: 440px) {
+  .navbar--bot { padding: 0 12px; }
+  .settings-panel { padding: 22px 14px 40px; }
+  /* Балансы и парные поля (USDT + CITRO) — в столбик на очень узких экранах */
+  .balance-items { flex-wrap: wrap; }
+  .balance-item { flex: 1 1 100%; min-width: 0; }
+  .field-row { grid-template-columns: 1fr; }
+}

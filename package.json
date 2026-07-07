@@ -1,0 +1,27 @@
+{
+  "name": "citonus-bots",
+  "version": "1.0.0",
+  "description": "",
+  "main": "auth.js",
+  "scripts": {
+    "start": "node worker/index.js"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Legenda3333/citro-trading-bots.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "bugs": {
+    "url": "https://github.com/Legenda3333/citro-trading-bots/issues"
+  },
+  "homepage": "https://github.com/Legenda3333/citro-trading-bots#readme",
+  "dependencies": {
+    "@supabase/supabase-js": "^2.106.0",
+    "bcryptjs": "^3.0.3",
+    "jsonwebtoken": "^9.0.3"
+  },
+  "devDependencies": {}
+}

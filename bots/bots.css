@@ -1,0 +1,436 @@
+/*
+   СТРАНИЦА «МОИ БОТЫ»
+   Каркас навбара/профиля/модалов — в style.css.
+   Здесь — раскладка страницы, пустое состояние и карточки ботов.
+   Часть классов намеренно повторяет страницу API-ключей
+   (page-main, empty-*) — страницы держим независимыми друг от друга.
+ */
+
+.page-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 44px 36px 60px;
+}
+
+.page-header {
+  margin-bottom: 36px;
+}
+
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-title {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+
+/*
+   ПУСТОЕ СОСТОЯНИЕ
+ */
+.bots-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-top: 48px;
+}
+
+.empty-icon-wrap {
+  width: 80px;
+  height: 80px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.empty-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--muted);
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 14px;
+}
+
+.empty-desc {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.7;
+  margin-bottom: 28px;
+  max-width: 420px;
+}
+
+/* Кнопка перехода к выбору бота — inline-ширина */
+.bots-empty-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 24px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--rs);
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: inherit;
+  text-decoration: none;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+}
+
+.bots-empty-btn:hover {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.18);
+}
+
+
+/*
+   СПИСОК БОТОВ
+ */
+.bots-list-header {
+  margin-bottom: 20px;
+}
+
+.bots-count {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+.bot-list-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+}
+
+
+/*
+   КАРТОЧКА БОТА
+   Имя «.bot-card» занято главной страницей (в style.css),
+   поэтому здесь свой класс — .mybot-card.
+ */
+.mybot-card {
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 18px 20px;
+  transition: border-color .18s;
+}
+
+.mybot-card:hover {
+  border-color: rgba(0, 212, 255, 0.25);
+}
+
+/* Верх карточки: имя слева, статус справа */
+.mybot-card-top {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 16px;
+}
+
+.mybot-name {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  min-width: 0;             /* длинное имя не выдавливает статус */
+  overflow-wrap: anywhere;
+}
+
+/* Бейдж статуса */
+.mybot-status {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;
+  font-size: 0.72rem;
+  font-weight: 600;
+  padding: 5px 11px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+/* Точка-индикатор перед текстом статуса */
+.mybot-status::before {
+  content: '';
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.mybot-status--active   { color: #22c55e; background: rgba(34, 197, 94, 0.10);  border: 1px solid rgba(34, 197, 94, 0.28); }
+.mybot-status--inactive { color: #ff5e6b; background: rgba(255, 94, 107, 0.10); border: 1px solid rgba(255, 94, 107, 0.28); }
+.mybot-status--error    { color: #f5a623; background: rgba(245, 166, 35, 0.10); border: 1px solid rgba(245, 166, 35, 0.30); }
+
+/* Причина ошибки на карточке бота (показывается при статусе «Ошибка») */
+.mybot-error {
+  margin: 0 0 14px;
+  padding: 9px 12px;
+  font-size: 0.85rem;
+  line-height: 1.4;
+  color: #f5a623;
+  background: rgba(245, 166, 35, 0.08);
+  border: 1px solid rgba(245, 166, 35, 0.22);
+  border-radius: var(--rs);
+}
+
+/* Характеристики бота: Тип у левого края (под названием), Депозит — у правого,
+   Пара между ними. space-between делает промежутки между полями ОДИНАКОВЫМИ.
+   Внутри каждого поля метка центрируется над своим значением (см. .mybot-field). */
+.mybot-card-grid {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  gap: 14px 24px;
+  flex-wrap: wrap;
+}
+
+/* Каждое поле — узкий блок по содержимому: метка по центру НАД своим значением
+   (align-items: center). Само поле размещает .mybot-card-grid (Тип слева,
+   Депозит справа, Пара между ними), поэтому значение Типа встаёт у левого края. */
+.mybot-field {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: 4px;
+  min-width: 0;
+}
+
+.mybot-label {
+  font-size: 0.68rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.mybot-value {
+  font-size: 0.85rem;
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Мини-иконка монеты — в значениях карточки и окна информации */
+.mybot-coin {
+  width: 16px;
+  height: 16px;
+  border-radius: 50%;
+  vertical-align: -3px;
+  margin-right: 4px;
+}
+
+/* Низ карточки: кнопки действий (справа) */
+.mybot-card-foot {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  flex-wrap: wrap;
+  gap: 12px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid var(--border);
+}
+
+
+/*
+   КНОПКИ ДЕЙСТВИЙ НА КАРТОЧКЕ
+ */
+.mybot-actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 6px;
+}
+
+.mybot-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 12px;
+  font-size: 0.76rem;
+  font-weight: 500;
+  font-family: inherit;
+  border-radius: var(--rs);
+  cursor: pointer;
+  white-space: nowrap;
+  transition: background .18s, color .18s, border-color .18s, opacity .18s;
+}
+
+/* Недоступная кнопка (активного бота нельзя править/удалять) */
+.mybot-btn:disabled {
+  opacity: 0.35;
+  cursor: not-allowed;
+}
+
+/* Информация — нейтральная */
+.mybot-btn--info {
+  background: rgba(255, 255, 255, 0.03);
+  color: var(--muted);
+  border: 1px solid var(--border);
+}
+.mybot-btn--info:hover {
+  color: var(--text);
+  border-color: var(--muted);
+}
+
+/* Редактировать — акцентная (синяя) */
+.mybot-btn--edit {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+}
+.mybot-btn--edit:hover:not(:disabled) {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+}
+
+/* Удалить — красная */
+.mybot-btn--delete {
+  background: rgba(255, 94, 107, 0.07);
+  color: #ff5e6b;
+  border: 1px solid rgba(255, 94, 107, 0.22);
+}
+.mybot-btn--delete:hover:not(:disabled) {
+  background: #ff5e6b;
+  color: #fff;
+  border-color: #ff5e6b;
+}
+
+/* Запустить — зелёная, Остановить — приглушённо-красная */
+.mybot-btn--toggle.is-start {
+  background: rgba(34, 197, 94, 0.10);
+  color: #22c55e;
+  border: 1px solid rgba(34, 197, 94, 0.28);
+}
+.mybot-btn--toggle.is-start:hover {
+  background: #22c55e;
+  color: #0e1117;
+  border-color: #22c55e;
+}
+.mybot-btn--toggle.is-stop {
+  background: rgba(255, 94, 107, 0.07);
+  color: #ff8d97;
+  border: 1px solid rgba(255, 94, 107, 0.22);
+}
+.mybot-btn--toggle.is-stop:hover {
+  background: #ff5e6b;
+  color: #fff;
+  border-color: #ff5e6b;
+}
+
+
+/*
+   СТРОКИ ОКНА «ИНФОРМАЦИЯ О БОТЕ»
+ */
+.info-rows {
+  display: flex;
+  flex-direction: column;
+}
+
+.info-row {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 16px;
+  padding: 9px 0;
+}
+
+.info-row + .info-row {
+  border-top: 1px solid var(--border);
+}
+
+.info-label {
+  font-size: 0.82rem;
+  color: var(--muted);
+  flex-shrink: 0;
+}
+
+.info-value {
+  font-size: 0.86rem;
+  font-weight: 500;
+  color: var(--text);
+  text-align: right;
+  font-variant-numeric: tabular-nums;
+  overflow-wrap: anywhere;
+}
+
+/* Цвет статуса в окне информации */
+.info-status--active   { color: #22c55e; }
+.info-status--inactive { color: #ff5e6b; }
+.info-status--error    { color: #f5a623; }
+
+/* Текст причины ошибки в окне «Информация» */
+.info-reason { color: #f5a623; }
+
+/* Заголовок окна «Информация» — название бота акцентным синим */
+#info-title {
+  color: var(--accent);
+}
+
+/* Акцентное (синее) название внутри заголовка окна — напр. «Остановить <имя>?» */
+.title-accent {
+  color: var(--accent);
+}
+
+/* Прогресс отмены ордеров при остановке бота (спиннер + текст).
+   display:flex ставим только когда атрибут hidden снят — иначе .stop-progress
+   перебивал бы [hidden]{display:none} и блок был бы виден всегда. */
+.stop-progress {
+  flex-direction: column;
+  align-items: center;
+  gap: 14px;
+  padding: 20px 0 10px;
+}
+.stop-progress:not([hidden]) {
+  display: flex;
+}
+.bot-spinner {
+  width: 28px;
+  height: 28px;
+  border: 3px solid rgba(255, 255, 255, 0.15);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: bot-spin 0.8s linear infinite;
+}
+@keyframes bot-spin {
+  to { transform: rotate(360deg); }
+}
+.stop-progress-text {
+  font-size: 0.82rem;          /* как у прогресса запуска (.confirm-loading) */
+  color: var(--muted);
+  text-align: center;
+}
+
+
+/*
+   АДАПТИВНОСТЬ
+   Карточки ботов уже гибкие (flex-wrap внутри), поэтому здесь — только
+   уменьшение отступов страницы на планшетах и телефонах.
+ */
+@media (max-width: 640px) {
+  .page-main { padding: 34px 18px 48px; }
+}
+@media (max-width: 400px) {
+  .page-main { padding: 28px 14px 40px; }
+  .mybot-card { padding: 16px 15px; }
+}

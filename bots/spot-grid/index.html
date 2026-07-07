@@ -1,0 +1,688 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Spot Grid Bot — Citro Trading Bots</title>
+
+  <link rel="preconnect" href="https://fonts.googleapis.com" />
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet" />
+  <link rel="icon" type="image/svg+xml" href="../../favicon.svg" />
+
+  <link rel="stylesheet" href="../../style.css" />
+  <link rel="stylesheet" href="./spot-grid.css" />
+
+  <!-- defer: скрипт скачивается параллельно с рендером HTML,
+       выполняется прямо перед DOMContentLoaded — страница не блокируется -->
+  <script defer src="https://unpkg.com/lightweight-charts@4.2.0/dist/lightweight-charts.standalone.production.js"
+          integrity="sha384-OK7vELvjHdhUFi31JYioPIcRHTROLdcDa6ZsNWgvgLaKj+9JqhU0Ad8g4wz3CXjA"
+          crossorigin="anonymous"></script>
+
+  <!-- Защита: без токена — на страницу входа -->
+  <script src="../../auth-guard.js"></script>
+</head>
+<body>
+
+  <!--
+       УПРОЩЁННЫЙ НАВБАР для страницы бота:
+       нет иконок профиля/статистики,
+       чуть ниже обычного — не отвлекает
+ -->
+  <nav class="navbar navbar--bot">
+
+    <!-- Иконка молнии (логотип) + заголовок страницы -->
+    <div class="bot-nav-left">
+      <svg class="logo-icon" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+        <path d="M13 2L4 14h7l-1 8 9-12h-7l1-8z"/>
+      </svg>
+      <h1 class="bot-nav-title">Создание бота</h1>
+    </div>
+
+    <!-- Кнопка-иконка выхода (X) — без текста, интуитивно понятна -->
+    <a href="/main/" class="btn-exit-bot" aria-label="Выйти из настроек бота">
+      <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+           stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+        <line x1="18" y1="6" x2="6" y2="18"/>
+        <line x1="6"  y1="6" x2="18" y2="18"/>
+      </svg>
+    </a>
+
+  </nav>
+
+
+  <!--
+       РАБОЧАЯ ОБЛАСТЬ: график слева, настройки справа
+ -->
+  <div class="bot-workspace">
+
+    <!-- ЛЕВЫЙ БЛОК: График -->
+    <section class="chart-panel">
+
+      <div class="chart-header">
+        <div class="pair-info">
+
+          <!-- Иконка монеты + название пары -->
+          <div class="pair-name-row">
+            <img class="pair-coin-icon"
+                 src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/CITRO.svg"
+                 alt="CITRO" />
+            <h3 class="pair-name">CITRO <span>/</span> USDT</h3>
+          </div>
+
+          <!-- Цена и % изменения за 24ч — заполняются из tickers API -->
+          <div class="pair-price">
+            <span class="price-value" id="current-price">—</span>
+            <span class="price-change" id="price-change">—</span>
+          </div>
+
+        </div>
+
+        <!-- Переключатель вида: график / стакан ордеров / таблица ордеров -->
+        <div class="view-tabs">
+
+          <!-- 1. График (активен по умолчанию) -->
+          <div class="view-tab-wrap">
+            <button class="view-tab active" data-view="chart"
+                    aria-label="График" type="button">
+              <!-- Candlestick (свечной) — стандартная иконка торгового графика -->
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="7"  y1="3"  x2="7"  y2="6"/>
+                <rect x="4"  y="6"  width="6" height="8" rx="0.5"/>
+                <line x1="7"  y1="14" x2="7"  y2="21"/>
+                <line x1="17" y1="3"  x2="17" y2="9"/>
+                <rect x="14" y="9"  width="6" height="8" rx="0.5"/>
+                <line x1="17" y1="17" x2="17" y2="21"/>
+              </svg>
+            </button>
+            <div class="view-tab-tooltip">График</div>
+          </div>
+
+          <!-- 2. Стакан ордеров -->
+          <div class="view-tab-wrap">
+            <button class="view-tab" data-view="orderbook"
+                    aria-label="Стакан ордеров" type="button">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <line x1="4" y1="6"  x2="20" y2="6"/>
+                <line x1="4" y1="10" x2="13" y2="10"/>
+                <line x1="4" y1="14" x2="17" y2="14"/>
+                <line x1="4" y1="18" x2="10" y2="18"/>
+              </svg>
+            </button>
+            <div class="view-tab-tooltip">Orderbook</div>
+          </div>
+
+          <!-- 3. Таблица ордеров сетки -->
+          <div class="view-tab-wrap">
+            <button class="view-tab" data-view="table"
+                    aria-label="Таблица ордеров" type="button">
+              <svg width="17" height="17" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                <rect x="3" y="4" width="18" height="16" rx="2"/>
+                <line x1="3"  y1="10" x2="21" y2="10"/>
+                <line x1="12" y1="10" x2="12" y2="20"/>
+              </svg>
+            </button>
+            <div class="view-tab-tooltip">Таблица ордеров</div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- Контейнер графика + спиннер загрузки -->
+      <div class="chart-wrapper">
+
+        <!-- Кнопки таймфрейма — плавают поверх графика в левом верхнем углу.
+             Видны только в режиме "График" (скрываются в стакане/таблице) -->
+        <div class="interval-tabs">
+          <button class="interval-tab">15м</button>
+          <button class="interval-tab active">1ч</button>
+          <button class="interval-tab">4ч</button>
+          <button class="interval-tab">1Д</button>
+        </div>
+
+        <div id="chart"></div>
+        <div id="chart-loading" class="chart-loading">
+          <div class="loading-spinner"></div>
+          <p>Загрузка данных, пожалуйста подождите…</p>
+        </div>
+
+        <!-- Маркер "+" на пересечении перекрестья.
+             Заменяет скрытый системный курсор, следует за мышью.
+             Размер 48x48 (3x от исходного 16x16). -->
+        <div id="crosshair-marker" class="crosshair-marker">
+          <svg width="36" height="36" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="1" stroke-linecap="round" aria-hidden="true">
+            <line x1="12" y1="4" x2="12" y2="20"/>
+            <line x1="4"  y1="12" x2="20" y2="12"/>
+          </svg>
+        </div>
+
+        <!-- Слой "Стакан ордеров" — поверх графика, скрыт по умолчанию -->
+        <div id="orderbook-view" class="side-view" hidden>
+          <div class="orderbook">
+
+            <!-- Заголовки колонок -->
+            <div class="ob-head">
+              <span>Цена <i>USDT</i></span>
+              <span>Кол-во <i>CITRO</i></span>
+              <span>Итого <i>CITRO</i></span>
+            </div>
+
+            <!-- Ордера на продажу (аски) — скроллятся, лучший внизу -->
+            <div class="ob-asks" id="ob-asks"></div>
+
+            <!-- Цена последней сделки + спред -->
+            <div class="ob-mid">
+              <span class="ob-mid-price" id="ob-mid-price">—</span>
+              <span class="ob-mid-usd" id="ob-mid-usd"></span>
+              <!-- Спред: разница лучший ask − лучший bid, справа -->
+              <span class="ob-mid-spread" id="ob-mid-spread"></span>
+            </div>
+
+            <!-- Ордера на покупку (биды) — скроллятся, лучший вверху -->
+            <div class="ob-bids" id="ob-bids"></div>
+
+            <!-- Заглушка загрузки (прячется после первого ответа) -->
+            <div class="ob-loading" id="ob-loading">
+              <div class="loading-spinner"></div>
+              <p>Загрузка данных, пожалуйста подождите…</p>
+            </div>
+
+          </div>
+        </div>
+
+        <!-- Слой "Таблица ордеров сетки" — поверх графика, скрыт по умолчанию -->
+        <div id="grid-table-view" class="side-view" hidden>
+
+          <!-- Подсказка, когда поля ещё не заполнены -->
+          <div class="gt-message" id="gt-message">
+            Заполните поля «Депозит», «Нижняя граница», «Верхняя граница» и
+            «Количество сеток», чтобы увидеть список ордеров, которые выставит бот.
+          </div>
+
+          <!-- Состояние загрузки (пока считаем новые данные) -->
+          <div class="gt-loading" id="gt-loading" hidden>
+            <div class="loading-spinner"></div>
+            <p>Загрузка данных, пожалуйста подождите…</p>
+          </div>
+
+          <!-- Таблица предварительных ордеров (скрыта, пока нет данных) -->
+          <div class="gt-table" id="gt-table" hidden>
+            <div class="gt-head">
+              <span>Тип</span>
+              <span>Цена <i>USDT</i></span>
+              <span>Сделка</span>
+            </div>
+            <div class="gt-rows" id="gt-rows"></div>
+          </div>
+
+        </div>
+
+      </div>
+
+    </section>
+
+
+    <!-- ПРАВЫЙ БЛОК: Настройки -->
+    <section class="settings-panel">
+
+      <!-- Заголовок с тултипом -->
+      <div class="settings-header">
+        <div class="settings-title-row">
+          <h2 class="settings-title">Spot Grid Bot</h2>
+          <div class="info-wrapper">
+            <button class="info-btn" aria-label="Информация о боте">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none"
+                   stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                <circle cx="12" cy="12" r="10"/>
+                <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                <line x1="12" y1="17" x2="12.01" y2="17"/>
+              </svg>
+            </button>
+            <div class="info-tooltip">
+              Бот расставляет сетку лимитных ордеров в заданном ценовом диапазоне.
+              Покупает при падении цены и продаёт при росте.
+            </div>
+          </div>
+        </div>
+      </div>
+
+
+      <!-- БЛОК 1: ОСНОВНЫЕ НАСТРОЙКИ -->
+      <div class="settings-section">
+        <p class="section-label">Основные настройки</p>
+
+        <!-- Название бота -->
+        <div class="field-group">
+          <label class="field-label" for="bot-name">Название бота</label>
+          <input id="bot-name" type="text" class="field-input"
+                 placeholder="Придумайте название для вашего бота"
+                 maxlength="32" autocomplete="off" aria-describedby="bot-name-error" />
+          <!-- Серверная ошибка имени (дубликат) — снимается при правке имени -->
+          <p class="field-error" id="bot-name-error" role="alert"></p>
+        </div>
+
+        <!-- API ключ + Торговая пара — в одну строку -->
+        <div class="field-row">
+
+          <!-- Кастомный выпадающий список API ключей -->
+          <div class="field-group">
+            <div class="field-label-row">
+              <label class="field-label">API ключ</label>
+              <div class="info-wrapper">
+                <button class="info-btn" aria-label="Информация об API ключе">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                </button>
+                <div class="info-tooltip">
+                  Даёт боту доступ к вашему биржевому счёту и позволяет торговать от вашего имени.
+                  Бот получает доступ только к торговле, вывод средств останется невозможен.
+                </div>
+              </div>
+            </div>
+            <div class="custom-select" id="api-select">
+
+              <!-- Триггер: показывает текущее состояние, открывает список -->
+              <button class="custom-select-btn" id="api-select-btn" type="button">
+                <span class="select-placeholder">Выбрать</span>
+                <svg class="select-arrow" width="14" height="14" viewBox="0 0 24 24"
+                     fill="none" stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" aria-hidden="true">
+                  <polyline points="6 9 12 15 18 9"/>
+                </svg>
+              </button>
+
+              <!-- Выпадающий список -->
+              <div class="custom-select-list" id="api-select-list">
+                <!-- Здесь появятся ключи, когда они будут добавлены -->
+
+                <!-- Действие: добавить новый ключ -->
+                <a href="/api-keys/" class="select-item select-item--action">
+                  <svg width="13" height="13" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2.5"
+                       stroke-linecap="round" aria-hidden="true">
+                    <line x1="12" y1="5" x2="12" y2="19"/>
+                    <line x1="5"  y1="12" x2="19" y2="12"/>
+                  </svg>
+                  Добавить новый API ключ
+                </a>
+              </div>
+            </div>
+          </div>
+
+          <!-- Торговая пара — только для чтения -->
+          <div class="field-group">
+            <div class="field-label-row">
+              <label class="field-label">Торговая пара</label>
+              <div class="info-wrapper">
+                <button class="info-btn" aria-label="Информация о торговой паре">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                </button>
+                <div class="info-tooltip">
+                  Определяет, каким активом будет торговать бот.
+                </div>
+              </div>
+            </div>
+            <div class="pair-static">
+              <img src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/CITRO.svg"
+                   class="pair-static-icon" alt="CITRO" />
+              <span class="pair-static-name">CITRO / USDT</span>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+
+      <!-- БЛОК 2: ДЕПОЗИТ -->
+      <div class="settings-section">
+        <p class="section-label">Депозит</p>
+
+        <!-- Доступный баланс -->
+        <div class="balance-section">
+
+          <!-- Заголовок: надпись + иконка ? + кнопка обновления -->
+          <div class="balance-header">
+            <span class="balance-title">Доступный баланс</span>
+
+            <div class="info-wrapper">
+              <button class="info-btn" aria-label="Информация о балансе">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </button>
+              <!-- Текст меняется в JS: до и после выбора ключа -->
+              <div class="info-tooltip" id="balance-info-tooltip">
+                Выберите API ключ для просмотра доступного баланса.
+              </div>
+            </div>
+
+            <!-- Кнопка обновления баланса — со стилизованным тултипом (как у ?) -->
+            <div class="info-wrapper">
+              <button class="balance-refresh-btn" id="balance-refresh"
+                      aria-label="Обновить баланс" type="button">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2"
+                     stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">
+                  <polyline points="23 4 23 10 17 10"/>
+                  <path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"/>
+                </svg>
+              </button>
+              <div class="info-tooltip info-tooltip--compact">Обновить баланс</div>
+            </div>
+          </div>
+
+          <!-- Два отдельных блока: USDT и CITRO -->
+          <div class="balance-items">
+            <div class="balance-item">
+              <img src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/USDT.svg"
+                   class="balance-item-icon" alt="USDT" />
+              <div class="balance-item-info">
+                <span class="balance-item-amount" id="balance-usdt">0</span>
+                <span class="balance-item-ticker">USDT</span>
+              </div>
+            </div>
+
+            <div class="balance-item">
+              <img src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/CITRO.svg"
+                   class="balance-item-icon" alt="CITRO" />
+              <div class="balance-item-info">
+                <span class="balance-item-amount" id="balance-citro">0</span>
+                <span class="balance-item-ticker">CITRO</span>
+              </div>
+            </div>
+          </div>
+
+        </div>
+
+        <!-- Валюта депозита — кастомный выпадающий список с иконками -->
+        <div class="field-group">
+          <label class="field-label">Валюта депозита</label>
+          <div class="custom-select" id="deposit-select">
+
+            <button class="custom-select-btn" id="deposit-select-btn" type="button">
+              <!-- Текущее выбранное значение с иконкой -->
+              <div class="select-value" id="deposit-display">
+                <img class="select-val-icon"
+                     src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/USDT.svg"
+                     alt="USDT" />
+                <span>USDT</span>
+              </div>
+              <svg class="select-arrow" width="14" height="14" viewBox="0 0 24 24"
+                   fill="none" stroke="currentColor" stroke-width="2"
+                   stroke-linecap="round" aria-hidden="true">
+                <polyline points="6 9 12 15 18 9"/>
+              </svg>
+            </button>
+
+            <div class="custom-select-list" id="deposit-select-list">
+
+              <button class="select-item is-active" data-token="USDT" type="button">
+                <img class="option-icon"
+                     src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/USDT.svg"
+                     alt="USDT" />
+                USDT
+              </button>
+
+              <button class="select-item" data-token="CITRO" type="button">
+                <img class="option-icon"
+                     src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/CITRO.svg"
+                     alt="CITRO" />
+                CITRO
+              </button>
+
+              <button class="select-item" data-token="BOTH" type="button">
+                <!-- Две иконки рядом для USDT + CITRO -->
+                <div class="option-icons-pair">
+                  <img class="option-icon"
+                       src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/USDT.svg"
+                       alt="USDT" />
+                  <img class="option-icon option-icon--overlap"
+                       src="https://s3.eu-central-2.wasabisys.com/citronus/icons/coins/CITRO.svg"
+                       alt="CITRO" />
+                </div>
+                USDT + CITRO
+              </button>
+
+            </div>
+          </div>
+        </div>
+
+        <!-- Одно поле (USDT или CITRO) -->
+        <div id="deposit-single" class="field-group">
+          <label class="field-label">
+            Сумма <span class="field-unit" id="deposit-unit">USDT</span>
+          </label>
+          <input id="deposit-amount" type="text" inputmode="decimal"
+                 class="field-input" placeholder="0.00" autocomplete="off"
+                 maxlength="20" aria-describedby="deposit-amount-error" />
+          <p class="field-error" id="deposit-amount-error" role="alert"></p>
+        </div>
+
+        <!-- Два поля (USDT + CITRO) — скрыто по умолчанию -->
+        <div id="deposit-both" class="field-row" style="display:none">
+          <div class="field-group">
+            <label class="field-label">Сумма <span class="field-unit">USDT</span></label>
+            <input id="deposit-usdt" type="text" inputmode="decimal"
+                   class="field-input" placeholder="0.00" autocomplete="off"
+                   maxlength="20" aria-describedby="deposit-usdt-error deposit-both-error" />
+            <p class="field-error" id="deposit-usdt-error" role="alert"></p>
+          </div>
+          <div class="field-group">
+            <label class="field-label">Сумма <span class="field-unit">CITRO</span></label>
+            <input id="deposit-citro" type="text" inputmode="decimal"
+                   class="field-input" placeholder="0.00" autocomplete="off"
+                   maxlength="20" aria-describedby="deposit-citro-error deposit-both-error" />
+            <p class="field-error" id="deposit-citro-error" role="alert"></p>
+          </div>
+        </div>
+        <!-- Ошибка минимума для режима USDT+CITRO — вне грида, чтобы не растягивать колонки -->
+        <p class="field-error" id="deposit-both-error" role="alert"></p>
+      </div>
+
+
+      <!-- БЛОК 3: ПАРАМЕТРЫ СЕТКИ -->
+      <div class="settings-section">
+        <p class="section-label">Параметры сетки</p>
+
+        <!-- Ценовой диапазон -->
+        <div class="field-row">
+          <div class="field-group">
+            <div class="field-label-row">
+              <label class="field-label" for="price-low">
+                Нижняя граница <span class="field-unit">USDT</span>
+              </label>
+              <div class="info-wrapper">
+                <button class="info-btn" aria-label="Информация о нижней границе">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                </button>
+                <div class="info-tooltip">
+                  Нижний предел ценового диапазона. Ниже этой отметки бот не выставляет ордера на покупку.
+                </div>
+              </div>
+            </div>
+            <input id="price-low" type="text" inputmode="decimal"
+                   class="field-input" placeholder="0.00000" autocomplete="off"
+                   maxlength="20" aria-describedby="price-low-error" />
+            <p class="field-error" id="price-low-error" role="alert"></p>
+          </div>
+          <div class="field-group">
+            <div class="field-label-row">
+              <label class="field-label" for="price-high">
+                Верхняя граница <span class="field-unit">USDT</span>
+              </label>
+              <div class="info-wrapper">
+                <button class="info-btn" aria-label="Информация о верхней границе">
+                  <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                       stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                    <circle cx="12" cy="12" r="10"/>
+                    <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                    <line x1="12" y1="17" x2="12.01" y2="17"/>
+                  </svg>
+                </button>
+                <div class="info-tooltip">
+                  Верхний предел ценового диапазона. Выше этой отметки бот не выставляет ордера на продажу.
+                </div>
+              </div>
+            </div>
+            <input id="price-high" type="text" inputmode="decimal"
+                   class="field-input" placeholder="0.00000" autocomplete="off"
+                   maxlength="20" aria-describedby="price-high-error" />
+            <p class="field-error" id="price-high-error" role="alert"></p>
+          </div>
+        </div>
+
+        <!-- Количество сеток -->
+        <div class="field-group">
+          <div class="field-label-row">
+            <label class="field-label" for="grid-count">
+              Количество сеток <span class="field-unit">шт.</span>
+            </label>
+            <div class="info-wrapper">
+              <button class="info-btn" aria-label="Информация о количестве сеток">
+                <svg width="14" height="14" viewBox="0 0 24 24" fill="none"
+                     stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+                  <circle cx="12" cy="12" r="10"/>
+                  <path d="M9.09 9a3 3 0 0 1 5.83 1c0 2-3 3-3 3"/>
+                  <line x1="12" y1="17" x2="12.01" y2="17"/>
+                </svg>
+              </button>
+              <div class="info-tooltip">
+                Количество ордеров, равномерно распределённых между нижней и верхней границей.
+                Чем больше сеток — тем чаще срабатывают сделки, но тем меньше прибыль с каждой.
+              </div>
+            </div>
+          </div>
+          <input id="grid-count" type="text" inputmode="numeric"
+                 class="field-input" placeholder="2-100" autocomplete="off"
+                 maxlength="3" aria-describedby="grid-count-error" />
+          <p class="field-error" id="grid-count-error" role="alert"></p>
+        </div>
+      </div>
+
+
+      <!-- Инфо-блок: какая монета на какую обменяется при создании бота.
+           Заполняется и показывается из JS, когда настройки корректны -->
+      <div class="bot-summary" id="bot-summary" hidden>
+        <span class="bot-summary-title">Обратите внимание, что при запуске бота будет выполнен обмен по текущей рыночной цене:</span>
+        <div class="bot-summary-swap" id="bot-summary-swap"></div>
+      </div>
+
+      <!-- Кнопка создания -->
+      <div class="settings-action">
+        <button class="create-btn" id="create-btn" disabled>Создать бота →</button>
+      </div>
+
+    </section>
+  </div>
+
+
+  <!--
+       МОДАЛ ПОДТВЕРЖДЕНИЯ СОЗДАНИЯ БОТА
+       Открывается по кнопке «Создать бота». Сводка считается
+       по свежему стакану в момент открытия (см. openConfirmModal).
+ -->
+  <div class="modal-overlay" id="confirm-overlay" aria-hidden="true">
+    <div class="modal modal--confirm" role="dialog" aria-modal="true" aria-labelledby="confirm-title">
+
+      <!-- Шапка модала -->
+      <div class="modal-hd">
+        <h2 class="modal-title" id="confirm-title">Подтверждение создания бота</h2>
+        <button class="modal-close-btn" id="confirm-close-btn" aria-label="Закрыть" type="button">
+          <svg width="16" height="16" viewBox="0 0 24 24" fill="none"
+               stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true">
+            <line x1="18" y1="6" x2="6" y2="18"/>
+            <line x1="6"  y1="6" x2="18" y2="18"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Тело модала: три состояния — загрузка / ошибка / сводка -->
+      <div class="modal-bd">
+
+        <!-- Загрузка: запрашиваем свежий стакан и считаем сводку -->
+        <div class="confirm-loading" id="confirm-loading">
+          <div class="loading-spinner"></div>
+          <p>Загрузка данных, пожалуйста подождите…</p>
+        </div>
+
+        <!-- Ошибка получения данных биржи -->
+        <p class="confirm-error" id="confirm-error" hidden></p>
+
+        <!-- Сводка настроек бота (строки заполняет JS) -->
+        <div class="confirm-summary" id="confirm-summary" hidden>
+          <div class="confirm-rows" id="confirm-rows"></div>
+
+          <!-- Блок обмена при запуске — стилистика инфо-блока под настройками -->
+          <div class="confirm-swap-box" id="confirm-swap-box" hidden>
+            <span class="bot-summary-title">Обратите внимание, что при запуске бота будет выполнен обмен по текущей рыночной цене:</span>
+            <div class="bot-summary-swap" id="confirm-swap"></div>
+          </div>
+
+          <!-- Предупреждение о втором активном боте на том же аккаунте (не блокирует) -->
+          <p class="confirm-keywarn" id="confirm-keywarn" role="alert" hidden></p>
+
+          <!-- Превышение лимита биржи в 100 ордеров (БЛОКИРУЕТ создание/запуск) -->
+          <p class="confirm-submit-error" id="confirm-limit" role="alert" hidden></p>
+
+          <!-- Принятие рисков: пока галочка не стоит, кнопки создания неактивны -->
+          <label class="confirm-risk">
+            <input type="checkbox" id="confirm-risk-checkbox" />
+            <span>Я понимаю, что торговля криптовалютами связана с финансовыми
+            рисками, и беру всю ответственность за возможные убытки на себя.
+            Торговый бот автоматизирует стратегию и не может гарантировать
+            прибыль.</span>
+          </label>
+
+          <!-- Ошибка отправки на сервер (дубликат имени, лимит, сеть и т.п.) -->
+          <p class="confirm-submit-error" id="confirm-submit-error" role="alert" hidden></p>
+        </div>
+
+        <!-- Запуск: воркер выставляет сетку. Уходим на «Мои боты» только когда
+             все ордера реально встали (см. launchAndPoll в spot-grid.js). -->
+        <div class="confirm-loading" id="confirm-launch" hidden>
+          <div class="loading-spinner"></div>
+          <p id="confirm-launch-text">Запуск бота: выставляется сетка…</p>
+        </div>
+
+      </div>
+
+      <!-- Подвал: Отмена / Создать / Создать и запустить -->
+      <div class="modal-ft">
+        <button class="btn-cancel" id="confirm-cancel-btn" type="button">Отмена</button>
+        <button class="btn-save" id="confirm-create-btn" type="button" disabled>Создать</button>
+        <button class="btn-save btn-save--primary" id="confirm-create-run-btn" type="button" disabled>Создать и запустить</button>
+      </div>
+
+    </div>
+  </div>
+
+  <script src="../../errors.js"></script>
+  <script src="../../common.js"></script>
+  <script src="./grid-core.js"></script>
+  <script src="./spot-grid.js"></script>
+
+</body>
+</html>

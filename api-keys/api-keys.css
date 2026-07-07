@@ -1,0 +1,478 @@
+/*
+   ОСНОВНОЙ КОНТЕНТ СТРАНИЦЫ
+ */
+.page-main {
+  max-width: 900px;
+  margin: 0 auto;
+  padding: 44px 36px 60px;
+}
+
+/* Заголовок страницы слева */
+.page-header {
+  margin-bottom: 48px;
+}
+
+/* Строка с заголовком и иконкой информации */
+.page-title-row {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.page-title {
+  font-size: 1.45rem;
+  font-weight: 700;
+  color: var(--text);
+  letter-spacing: -0.01em;
+}
+
+/* Иконка ⓘ рядом с заголовком */
+.info-wrapper {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.info-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  background: none;
+  border: none;
+  color: var(--dim);
+  cursor: pointer;
+  padding: 0;
+  transition: color .18s;
+}
+
+.info-btn:hover {
+  color: var(--accent);
+}
+
+/* Всплывающий блок с описанием — по умолчанию НАД иконкой */
+.info-tooltip {
+  position: absolute;
+  bottom: calc(100% + 10px);
+  top: auto;
+  left: 0;
+  width: 320px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  padding: 13px 15px;
+  font-size: 0.78rem;
+  line-height: 1.7;
+  color: var(--muted);
+  box-shadow: 0 8px 28px rgba(0, 0, 0, 0.35);
+  z-index: 100;
+
+  opacity: 0;
+  pointer-events: none;
+  transform: translateY(4px);
+  transition: opacity .18s ease, transform .18s ease;
+}
+
+/* Стрелочка снизу тултипа */
+.info-tooltip::before {
+  content: '';
+  position: absolute;
+  bottom: -6px;
+  top: auto;
+  left: 8px;
+  width: 10px;
+  height: 10px;
+  background: var(--surface);
+  border-right: 1px solid var(--border);
+  border-bottom: 1px solid var(--border);
+  transform: rotate(45deg);
+}
+
+.info-wrapper:hover .info-tooltip {
+  opacity: 1;
+  pointer-events: auto;
+  transform: translateY(0);
+}
+
+/* JS добавляет этот класс когда тултипу нет места над иконкой */
+.tooltip-below .info-tooltip {
+  bottom: auto;
+  top: calc(100% + 10px);
+  transform: translateY(-4px);
+}
+
+.tooltip-below .info-tooltip::before {
+  bottom: auto;
+  top: -6px;
+  border-right: none;
+  border-bottom: none;
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+}
+
+
+/*
+   ПУСТОЕ СОСТОЯНИЕ
+   Центрируется горизонтально, с отступом сверху
+ */
+.keys-empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  padding-top: 48px;
+}
+
+/* Круглый фон под иконкой ключа */
+.empty-icon-wrap {
+  width: 80px;
+  height: 80px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  margin-bottom: 24px;
+}
+
+.empty-icon {
+  width: 36px;
+  height: 36px;
+  color: var(--muted);
+}
+
+.empty-title {
+  font-size: 1rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 28px; /* увеличен отступ до кнопки */
+}
+
+.empty-desc {
+  font-size: 0.82rem;
+  color: var(--muted);
+  line-height: 1.7;
+  margin-bottom: 28px;
+}
+
+/* Кнопка "Добавить ключ" — inline-ширина, не на всю страницу */
+.add-key-btn {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  padding: 11px 24px;
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+  border-radius: var(--rs);
+  font-size: 0.875rem;
+  font-weight: 600;
+  font-family: inherit;
+  cursor: pointer;
+  transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
+}
+
+.add-key-btn:hover {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+  box-shadow: 0 0 20px rgba(0, 212, 255, 0.18);
+}
+
+
+/*
+   МОДАЛЬНЫЕ ОКНА
+   Каркас (.modal-overlay, .modal, .modal-hd/-bd/-ft,
+   кнопки .btn-cancel / .btn-save / .btn-danger, текст
+   .delete-confirm-text) — общие правила в style.css.
+   Здесь только содержимое модалов этой страницы.
+ */
+
+
+/*
+   ПОЛЯ ВНУТРИ МОДАЛА
+   (переиспользуем стили из spot-grid.css,
+    но здесь дублируем чтобы не было зависимости)
+ */
+.field-group {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+
+.field-label {
+  font-size: 0.79rem;
+  font-weight: 500;
+  color: var(--muted);
+}
+
+.field-input {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  padding: 14px 13px;
+  color: var(--text);
+  font-size: 0.875rem;
+  font-family: inherit;
+  outline: none;
+  transition: border-color .18s, box-shadow .18s;
+  width: 100%;
+}
+
+.field-input::placeholder {
+  color: var(--dim);
+}
+
+.field-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px rgba(0, 212, 255, 0.08);
+}
+
+/* .field-input.is-invalid и .field-error — общие правила в style.css */
+
+
+/*
+   ПОЛЕ "БИРЖА" — только для чтения
+ */
+.exchange-field {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 14px 13px;
+  background: rgba(255, 255, 255, 0.02);
+  border: 1px solid var(--border);
+  border-radius: var(--rs);
+  user-select: none;
+}
+
+/* Логотип Citronus — иконка с сайта citronus.com */
+.exchange-logo {
+  width: 20px;
+  height: 20px;
+  border-radius: 50%;
+  flex-shrink: 0;
+}
+
+.exchange-name {
+  font-size: 0.875rem;
+  font-weight: 500;
+  color: var(--text);
+  flex: 1;
+}
+
+/* Бейдж "Только эта биржа" */
+.exchange-only-badge {
+  font-size: 0.62rem;
+  font-weight: 600;
+  letter-spacing: 0.05em;
+  text-transform: uppercase;
+  color: var(--muted);
+  background: var(--card);
+  border: 1px solid var(--border);
+  padding: 2px 8px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+
+/*
+   ПОЛЕ С КНОПКОЙ ПОКАЗА/СКРЫТИЯ
+ */
+.input-with-toggle {
+  position: relative;
+}
+
+/* Сам инпут: отступ справа под кнопку */
+.input-with-toggle .field-input {
+  padding-right: 44px;
+}
+
+/* Кнопка глаза — внутри поля справа */
+.toggle-btn {
+  position: absolute;
+  right: 0;
+  top: 0;
+  bottom: 0;
+  width: 42px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: none;
+  border: none;
+  color: var(--muted);
+  cursor: pointer;
+  transition: color .18s;
+}
+
+.toggle-btn:hover {
+  color: var(--text);
+}
+
+
+/*
+   СПИСОК КЛЮЧЕЙ (показывается когда ключи есть)
+ */
+
+/* Шапка списка: счётчик слева, кнопка справа */
+.keys-list-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 20px;
+}
+
+.keys-count {
+  font-size: 0.85rem;
+  color: var(--muted);
+  font-weight: 500;
+}
+
+/* Сетка карточек */
+.keys-cards {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+/* Одна карточка ключа */
+.key-card {
+  display: flex;
+  align-items: center;
+  gap: 16px;
+  padding: 16px 20px;
+  background: var(--card);
+  border: 1px solid var(--border);
+  border-radius: var(--r);
+  transition: border-color .18s;
+}
+
+.key-card:hover {
+  border-color: rgba(0, 212, 255, 0.25);
+}
+
+/* Логотип биржи слева */
+.key-card-logo {
+  width: 36px;
+  height: 36px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-shrink: 0;
+}
+
+.key-card-logo img {
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+}
+
+/* Основная часть: название, публичный ключ, подсказка секрета, дата */
+.key-card-body {
+  flex: 1;
+  min-width: 0; /* предотвращает переполнение текста */
+}
+
+.key-card-name {
+  font-size: 0.9rem;
+  font-weight: 600;
+  color: var(--text);
+  margin-bottom: 10px; /* увеличенный отступ до блока с ключами */
+}
+
+/* Сетка 2×2: обе колонки по содержимому, не растягиваются до края */
+.key-card-grid {
+  display: inline-grid;
+  grid-template-columns: auto auto;
+  gap: 2px 68px;
+}
+
+/* Метки "Ключ" / "Секрет" — первая строка сетки */
+.key-card-label {
+  font-size: 0.7rem;
+  font-weight: 600;
+  color: var(--muted);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+/* Значения — вторая строка сетки */
+.key-card-public,
+.key-card-secret {
+  font-size: 0.82rem;
+  color: var(--text);
+  font-family: monospace;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.key-card-date {
+  font-size: 0.78rem;
+  color: var(--muted);
+  margin-top: 10px;
+}
+
+/* Кнопки справа */
+.key-card-actions {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  flex-shrink: 0;
+}
+
+.key-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center; /* иконка и текст по центру кнопки */
+  gap: 6px;
+  padding: 7px 14px;
+  font-size: 0.78rem;
+  font-weight: 500;
+  border-radius: var(--rs);
+  cursor: pointer;
+  font-family: inherit;
+  transition: background .18s, color .18s, border-color .18s;
+  white-space: nowrap;
+}
+
+.key-btn--edit {
+  background: var(--accent-bg);
+  color: var(--accent);
+  border: 1px solid rgba(0, 212, 255, 0.22);
+}
+
+.key-btn--edit:hover {
+  background: var(--accent);
+  color: #0e1117;
+  border-color: var(--accent);
+}
+
+.key-btn--delete {
+  background: rgba(255, 94, 107, 0.07);
+  color: #ff5e6b;
+  border: 1px solid rgba(255, 94, 107, 0.22);
+}
+
+.key-btn--delete:hover {
+  background: #ff5e6b;
+  color: #fff;
+  border-color: #ff5e6b;
+}
+
+
+/*
+   АДАПТИВНОСТЬ
+ */
+@media (max-width: 640px) {
+  .page-main { padding: 34px 18px 48px; }
+  /* Описание-тултип не должно вылезать за край экрана */
+  .info-tooltip { width: min(320px, calc(100vw - 32px)); }
+}
+@media (max-width: 400px) {
+  .page-main { padding: 28px 14px 40px; }
+  .key-card { padding: 14px 15px; gap: 12px; }
+  .key-card-grid { gap: 2px 28px; }
+}
