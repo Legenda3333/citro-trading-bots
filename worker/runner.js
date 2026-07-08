@@ -385,10 +385,18 @@ async function handleFills(bot, botRows, ctx, deps) {
     const h          = histMap.get(String(f.exchange_order_id)) || {};
     const fillPrice  = Number.isFinite(h.price)  ? h.price  : (f.price  != null ? Number(f.price)  : null);
     const fillAmount = Number.isFinite(h.amount) ? h.amount : (f.amount != null ? Number(f.amount) : null);
-    const rate       = f.side === 'buy' ? commissionBuy : commissionSell;
-    const fillFee    = Number.isFinite(h.fee) ? h.fee
-                     : ((fillPrice != null && fillAmount != null) ? rate * fillPrice * fillAmount : null);
-    const feeSource  = Number.isFinite(h.fee) ? 'orders_history' : 'estimate';
+    const rate = f.side === 'buy' ? commissionBuy : commissionSell;
+    // Комиссия из orders_history приходит в ПОЛУЧЕННОМ активе: покупка → в CITRO
+    // (base), продажа → в USDT (quote). Приводим к USDT: для покупки умножаем на
+    // цену исполнения. Оценка (fallback по ставке) уже считается в USDT.
+    let fillFee, feeSource;
+    if (Number.isFinite(h.fee)) {
+      fillFee   = (f.side === 'buy' && fillPrice != null) ? h.fee * fillPrice : h.fee;
+      feeSource = 'orders_history';
+    } else {
+      fillFee   = (fillPrice != null && fillAmount != null) ? rate * fillPrice * fillAmount : null;
+      feeSource = 'estimate';
+    }
 
     // Сделку пишем ИДЕМПОТЕНТНО. Если ордер уже записан (напр. на прошлом тике
     // пометка filled не прошла и мы попали сюда повторно) — БАЗА сама отклонит
