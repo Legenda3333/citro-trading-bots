@@ -36,6 +36,11 @@ function priceEq(a, b) { return Math.abs(a - b) < PRICE_EPS; }
 // продали, поэтому полученного USDT заведомо хватает (запас = шаг сетки).
 const COUNTER_SELL_HAIRCUT = 0.001;
 
+// Запас при докомпенсации объёма до стартового: встречный ордер ставим не больше,
+// чем свободный баланс × этот коэффициент — защита от «дрожи» баланса/округления,
+// чтобы ордер гарантированно был обеспечен (тот же смысл, что у хайрката).
+const TOPUP_SAFETY = 0.999;
+
 // Сколько тиков подряд «недоставленной» сетки терпим, прежде чем остановить
 // бота с ошибкой (иначе он молча и бесконечно ретраит непроходящие ордера).
 const PLACE_FAIL_MAX = 20;              // ~40 c при тике 2 c
@@ -173,6 +178,17 @@ async function reconcileBot(bot, ctx, deps) {
       }
       return 0;
     }
+
+    // Запоминаем СТАРТОВЫЙ объём ордера сетки (все ордера сетки одинаковы) — от него
+    // handleFills «докомпенсирует» объём встречных ордеров, чтобы позиция не таяла
+    // из-за комиссий. Best-effort: сбой записи не критичен (без base_qty докомпенсация
+    // просто не включится, бот работает как раньше).
+    const baseQty = plan.orders.length ? plan.orders[0].qty : null;
+    if (baseQty != null) {
+      await sb(() => supabase.from('bots')
+        .update({ base_qty: baseQty }).eq('id', bot.id),
+        { label: 'bots.base_qty', log, attempts: 2 }).catch(() => {});
+    }
   }
 
   // РАЗМЕЩЕНИЕ/ДОСТРОЙКА: ставим все строки в статусе 'placing'
@@ -286,8 +302,14 @@ async function placeCounterOrder(deps, bot, row, side, price, qty, activeOrders)
 async function handleFills(bot, botRows, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const { activeOrders = [], baseDec = 2, priceDec = 5, minQty = 1, minAmt = 0.1,
-          commissionBuy = 0, commissionSell = 0 } = ctx;
+          commissionBuy = 0, commissionSell = 0, balance = null } = ctx;
   const cfg = bot.config || {};
+
+  // Докомпенсация объёма: q0 — стартовый объём ордера сетки, bal — свободный баланс
+  // на ключ (общий, уменьшаем по мере резервирования в этом тике). Любой из них
+  // может отсутствовать → докомпенсация просто не сработает (работаем как раньше).
+  const q0  = Number.isFinite(Number(bot.base_qty)) ? Number(bot.base_qty) : 0;
+  const bal = balance;
 
   // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
@@ -354,10 +376,23 @@ async function handleFills(bot, botRows, ctx, deps) {
       log(`  · уровень ${targetIdx} занят — встречный не ставим (правило «только если пусто»)`);
     } else {
       const targetPrice = engine.roundTo(levels[targetIdx], priceDec);
-      // размер: sell — чуть меньше полученного (комиссия), buy — полный (фундируется USDT)
-      const qty = targetSide === 'sell'
+      // Базовый (безопасный) объём: продажа чуть меньше полученного (комиссия
+      // удержана в CITRO), покупка — полный объём (фундируется из выручки продажи).
+      const fallbackQty = targetSide === 'sell'
         ? engine.floorTo(f.amount * (1 - COUNTER_SELL_HAIRCUT), baseDec)
         : engine.floorTo(f.amount, baseDec);
+
+      // ДОКОМПЕНСАЦИЯ: стремимся вернуть объём к стартовому q0, добирая недостающее
+      // из накопленной прибыли/пыли. ЖЁСТКИЙ ПОТОЛОК — свободный баланс (× запас):
+      // никогда не ставим больше, чем реально свободно. Не хватает — остаёмся на
+      // базовом объёме. Так позиция не «уползает» вниз со временем.
+      let qty = fallbackQty;
+      if (q0 > qty && bal) {
+        const room = targetSide === 'sell' ? bal.CITRO : bal.USDT / targetPrice;
+        const affordable = engine.floorTo(room * TOPUP_SAFETY, baseDec);
+        const topped = Math.min(q0, affordable);
+        if (topped > qty) qty = topped;
+      }
 
       if (qty < minQty || qty * targetPrice < minAmt) {
         log(`  · встречный ${targetSide} ${qty} @ ${targetPrice} ниже минимума биржи — пропуск`);
@@ -368,7 +403,14 @@ async function handleFills(bot, botRows, ctx, deps) {
             log(`  · уровень ${targetIdx} уже занят (гонка) — встречный не нужен`);
           } else {
             occupied.add(targetIdx);
+            // Резервируем занятые средства в локальном учёте, чтобы следующее
+            // исполнение в этом же тике не пообещало те же деньги повторно.
+            if (bal) {
+              if (targetSide === 'sell') bal.CITRO -= qty;
+              else                       bal.USDT  -= qty * targetPrice;
+            }
             await placeCounterOrder(deps, bot, row, targetSide, targetPrice, qty, activeOrders);
+            if (qty > fallbackQty) log(`  ↑ объём встречного добран до ${qty} (старт ${q0})`);
           }
         } catch (e) {
           counterSecured = false; // намерение встречного не записано → исполнение НЕ закрываем

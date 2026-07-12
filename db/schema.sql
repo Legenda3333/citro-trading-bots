@@ -57,6 +57,7 @@ create table if not exists public.bots (
   created_at timestamp with time zone not null default now(),
   updated_at timestamp with time zone not null default now(),
   deleted_at timestamp with time zone null,
+  base_qty numeric null,
   constraint bots_pkey primary key (id),
   constraint bots_api_key_id_fkey foreign KEY (api_key_id) references api_keys (id) on delete RESTRICT,
   constraint bots_user_id_fkey foreign KEY (user_id) references users (id) on delete CASCADE
@@ -70,6 +71,11 @@ create index IF not exists bots_user_id_idx
 create unique INDEX IF not exists bots_user_name_active_uniq
   on public.bots using btree (user_id, name) TABLESPACE pg_default
   where (deleted_at is null);
+
+-- Стартовый объём ордера сетки (в CITRO). От него воркер «докомпенсирует» объём
+-- встречных ордеров, чтобы позиция не уменьшалась из-за комиссий. Для уже
+-- существующей базы добавляем столбец отдельно (идемпотентно).
+alter table public.bots add column if not exists base_qty numeric;
 
 
 -- bot_orders: желаемое/фактическое состояние ордеров сетки

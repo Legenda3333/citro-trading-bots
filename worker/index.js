@@ -132,7 +132,7 @@ async function handleReconcile() {
   let bots;
   try {
     bots = await sb(() => supabase.from('bots')
-      .select('id, name, api_key_id, status, config').eq('status', 'active'),
+      .select('id, name, api_key_id, status, config, base_qty').eq('status', 'active'),
       { label: 'чтение активных ботов', log });
   } catch (e) { log('ошибка чтения активных ботов:', e.message); return; }
   if (!bots || bots.length === 0) return;
@@ -212,14 +212,14 @@ async function handleReconcile() {
     }
     let openOrdersCount = activeOrders.length;
 
-    // Баланс нужен только для свежего запуска — берём, если в ключе есть свежий бот.
+    // Баланс нужен и для свежего запуска, и для докомпенсации объёма встречных
+    // ордеров (см. handleFills). Берём ОДИН раз на ключ за тик (лимит запросов
+    // держит по-ключевой ограничитель — превысить его этот вызов не может).
     let balance = null;
-    if (keyBots.some(b => (byBot.get(b.id) || []).length === 0)) {
-      try { balance = await citronus.getBalance(creds.apiKey, creds.secret); }
-      catch (e) { log('баланс не получен (свежий запуск пропустим):', e.message); }
-    }
+    try { balance = await citronus.getBalance(creds.apiKey, creds.secret); }
+    catch (e) { log('баланс не получен (свежий запуск/докомпенсация пропустятся):', e.message); }
 
-    const fillCtx = { activeOrders, baseDec, priceDec, minQty, minAmt,
+    const fillCtx = { activeOrders, baseDec, priceDec, minQty, minAmt, balance,
       commissionBuy:  (market && parseFloat(market.commission_limit_buy))  || 0,
       commissionSell: (market && parseFloat(market.commission_limit_sell)) || 0 };
     const deps    = { supabase, citronus, apiKey: creds.apiKey, secret: creds.secret, log };
