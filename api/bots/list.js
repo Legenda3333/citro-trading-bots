@@ -10,28 +10,10 @@ const supabase = createClient(
   process.env.SUPABASE_SERVICE_KEY
 );
 
-// Ставки комиссии берём из публичного метода markets (а не из константы) — нужны
-// как запасной расчёт комиссии для старых записей без фактической fee.
-async function fetchCommissionRates() {
-  try {
-    const r = await fetch('https://api.citronus.com/public/v1/jsonrpc', {
-      method:  'POST',
-      headers: { 'Content-Type': 'application/json; charset=utf-8' },
-      body: JSON.stringify({ jsonrpc: '2.0', method: 'markets',
-        params: { category: 'spot', symbol: 'CITRO/USDT' }, id: '1' }),
-      signal: AbortSignal.timeout(6000),   // «зависшая» биржа не держит функцию
-    });
-    if (!r.ok) return {};
-    const j = await r.json();
-    const m = Array.isArray(j && j.result) ? j.result[0] : (j && j.result);
-    const buy  = m && parseFloat(m.commission_limit_buy);
-    const sell = m && parseFloat(m.commission_limit_sell);
-    return {
-      commissionBuy:  Number.isFinite(buy)  ? buy  : undefined,
-      commissionSell: Number.isFinite(sell) ? sell : undefined,
-    };
-  } catch { return {}; }
-}
+// Комиссии в статистику берём ФАКТОМ из каждой сделки (их пишет воркер, уже в USDT).
+// Отдельный запрос к бирже за ставками больше не нужен — для редких старых записей
+// без сохранённой комиссии сработает запасная ставка внутри _stats (DEFAULT_COMMISSION,
+// равная последнему реальному значению). Так эндпоинт статистики стал быстрым (только БД).
 
 module.exports = async function handler(req, res) {
   applyCors(res, 'GET');
@@ -128,8 +110,7 @@ module.exports = async function handler(req, res) {
       trades = tr || [];
     }
 
-    const rates = await fetchCommissionRates();
-    return res.status(200).json(computeStats(allBots || [], trades, rates));
+    return res.status(200).json(computeStats(allBots || [], trades));
   }
 
   // Боты пользователя + имя используемого ключа (вложенный select по FK)

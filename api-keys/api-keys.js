@@ -292,40 +292,39 @@ function readCache()      { return keysCache.read(); }
 function writeCache(keys) { keysCache.write(keys); }
 
 
-// ЗАГРУЗКА КЛЮЧЕЙ (stale-while-revalidate)
-// Есть кэш — показываем мгновенно, затем всё равно сверяемся с сервером
-// (источник истины) и перерисовываем при изменениях. Закрывает рассинхрон,
-// когда ключи меняли на другом устройстве / кэш устарел.
+// ЗАГРУЗКА КЛЮЧЕЙ (fetch-first)
+// При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
+// Кэш остаётся офлайн-резервом. keysShown нужен, чтобы первый успешный ответ
+// отрисовался, даже если он совпал с кэшем.
+let keysShown = false;
 async function loadKeys() {
   const cached = readCache();
-
-  // Мгновенный показ из кэша, если он есть
-  if (cached !== null) renderKeys(cached);
-
-  // Фоновое обновление с сервера
-  const token = localStorage.getItem('token');
+  const token  = localStorage.getItem('token');
   try {
     const res = await fetch('/api/keys/list', {
       headers: { 'Authorization': 'Bearer ' + token }
     });
-
-    if (!res.ok) {
-      if (cached === null) renderKeys([]); // кэша не было и сервер не ответил
-      return;
-    }
+    if (!res.ok) throw new Error('http ' + res.status);
 
     const { keys } = await res.json();
     const fresh = keys || [];
-
-    // Перерисовываем только при реальных изменениях — без лишнего мерцания
-    if (JSON.stringify(fresh) !== JSON.stringify(cached)) {
+    if (!keysShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
       writeCache(fresh);
       renderKeys(fresh);
+      keysShown = true;
     }
   } catch {
-    if (cached === null) renderKeys([]); // сеть недоступна и кэша не было
+    // Сервер/сеть недоступны — ещё ничего не показано → тихо берём офлайн-резерв из кэша.
+    if (!keysShown) { renderKeys(cached || []); keysShown = true; }
   }
 }
+
+// Обновляем при ВОЗВРАЩЕНИИ на страницу (напр. после того как бот освободил ключ
+// на другой странице) — чтобы флаг «ключ занят» не отставал. Постоянный опрос
+// ключам не нужен: сами по себе они не меняются, пока страница открыта.
+document.addEventListener('visibilitychange', () => {
+  if (!document.hidden) loadKeys();
+});
 
 
 // РЕНДЕР КАРТОЧЕК КЛЮЧЕЙ

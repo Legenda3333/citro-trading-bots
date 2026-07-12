@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
   $('stat-retry')?.addEventListener('click', () => { showLoading(); fetchFresh(); });
 
   load();
+  if (!document.hidden) startAutoRefresh();
 });
 
 
@@ -51,10 +52,10 @@ const statsCache = makeCache('stats');         // фабрика кэша — и
 function readCache()  { return statsCache.read(); }
 function writeCache(d) { statsCache.write(d); }
 
+// fetch-first: при заходе показываем загрузку и грузим СВЕЖИЕ данные — старый кэш
+// как актуальный НЕ рисуем. Кэш остаётся только офлайн-резервом (см. fetchFresh).
 function load() {
-  const cached = readCache();
-  if (cached) { data = cached; afterData(); }
-  else        { showLoading(); }
+  showLoading();
   fetchFresh();
 }
 
@@ -66,18 +67,36 @@ async function fetchFresh() {
     });
 
     if (res.status === 401) { logout(); return; }          // токен истёк/недействителен
-    if (!res.ok) { if (!data) showError(); return; }
+    if (!res.ok) throw new Error('http ' + res.status);
 
     const fresh = await res.json();
-    if (JSON.stringify(fresh) !== JSON.stringify(data)) {   // без лишней перерисовки
+    if (JSON.stringify(fresh) !== JSON.stringify(data)) {   // без лишней перерисовки (важно для опроса)
       data = fresh;
       writeCache(fresh);
       afterData();
     }
   } catch {
-    if (!data) showError();
+    // Сервер/сеть недоступны. Если показать ещё нечего — тихо берём офлайн-резерв
+    // из кэша; нет и его — состояние ошибки. Если данные уже показаны (напр. упал
+    // фоновый опрос) — оставляем текущее, не мигаем ошибкой.
+    if (!data) {
+      const cached = readCache();
+      if (cached) { data = cached; afterData(); }
+      else        showError();
+    }
   }
 }
+
+// Живое обновление, пока страница ВИДИМА: раз в минуту. Ушёл на другую вкладку —
+// опрос останавливаем (не гоняем лишние запросы); вернулся — сразу обновляем.
+const REFRESH_MS = 60000;
+let refreshTimer = null;
+function startAutoRefresh() { stopAutoRefresh(); refreshTimer = setInterval(fetchFresh, REFRESH_MS); }
+function stopAutoRefresh()  { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = null; }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopAutoRefresh();
+  else { fetchFresh(); startAutoRefresh(); }
+});
 
 // Данные получены/обновлены: сортируем ботов, пересобираем фильтры и таблицу.
 // Сделки сервер уже отдаёт новыми сверху (по времени) — порядок не трогаем.

@@ -64,6 +64,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupCardActions();  // делегирование кликов по кнопкам карточек
   setupModals();       // закрытие окон «Информация» и «Удаление»
   loadBots();
+  if (!document.hidden) startAutoRefresh();
 });
 
 
@@ -75,37 +76,45 @@ function readCache()      { return botsCache.read(); }
 function writeCache(bots) { botsCache.write(bots); }
 
 
-// ЗАГРУЗКА (stale-while-revalidate)
+// ЗАГРУЗКА (fetch-first)
+// При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
+// Кэш остаётся офлайн-резервом. botsShown нужен, чтобы первый успешный ответ
+// отрисовался даже если он совпал с кэшем. Функция используется и при заходе, и при опросе.
+let botsShown = false;
 async function loadBots() {
   const cached = readCache();
-
-  // Мгновенный показ из кэша, если он есть
-  if (cached !== null) renderBots(cached);
-
-  // Фоновое обновление с сервера (источник истины)
-  const token = localStorage.getItem('token');
+  const token  = localStorage.getItem('token');
   try {
     const res = await fetch('/api/bots/list', {
       headers: { 'Authorization': 'Bearer ' + token }
     });
-
-    if (!res.ok) {
-      if (cached === null) renderBots([]); // кэша не было и сервер не ответил
-      return;
-    }
+    if (!res.ok) throw new Error('http ' + res.status);
 
     const { bots } = await res.json();
     const fresh = bots || [];
-
-    // Перерисовываем только при реальных изменениях — без лишнего мерцания
-    if (JSON.stringify(fresh) !== JSON.stringify(cached)) {
+    // Рисуем при первом показе или при реальных изменениях (последнее важно для опроса).
+    if (!botsShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
       writeCache(fresh);
       renderBots(fresh);
+      botsShown = true;
     }
   } catch {
-    if (cached === null) renderBots([]); // сеть недоступна и кэша не было
+    // Сервер/сеть недоступны. Ещё ничего не показано — тихо берём офлайн-резерв из
+    // кэша; уже показано (упал фоновый опрос) — оставляем текущее.
+    if (!botsShown) { renderBots(cached || []); botsShown = true; }
   }
 }
+
+// Живое обновление, пока страница ВИДИМА: раз в минуту. Ушёл на другую вкладку —
+// опрос останавливаем; вернулся — сразу обновляем.
+const REFRESH_MS = 60000;
+let refreshTimer = null;
+function startAutoRefresh() { stopAutoRefresh(); refreshTimer = setInterval(loadBots, REFRESH_MS); }
+function stopAutoRefresh()  { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = null; }
+document.addEventListener('visibilitychange', () => {
+  if (document.hidden) stopAutoRefresh();
+  else { loadBots(); startAutoRefresh(); }
+});
 
 
 // РЕНДЕР: пустое состояние или список карточек
