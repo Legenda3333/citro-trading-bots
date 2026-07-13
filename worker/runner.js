@@ -388,7 +388,21 @@ async function handleFills(bot, botRows, ctx, deps) {
       // базовом объёме. Так позиция не «уползает» вниз со временем.
       let qty = fallbackQty;
       if (q0 > qty && bal) {
-        const room = targetSide === 'sell' ? bal.CITRO : bal.USDT / targetPrice;
+        // Сколько CITRO/USDT реально доступно для встречного ордера. ТОНКОСТЬ:
+        // средства, ТОЛЬКО ЧТО полученные от исполнения, в снимке баланса (взят в
+        // начале тика) могут ещё не отразиться из-за задержки зачисления на бирже.
+        // Поэтому явно учитываем полученное от ЭТОГО исполнения: если снимок «до
+        // зачисления» (меньше полученного) — добавляем полученное; иначе он его
+        // уже включает (не задваиваем).
+        let room;
+        if (targetSide === 'sell') {                                  // покупка исполнилась → у нас CITRO
+          const received = f.amount * (1 - commissionBuy);           // CITRO за вычетом комиссии покупки
+          room = bal.CITRO < received ? bal.CITRO + received : bal.CITRO;
+        } else {                                                      // продажа исполнилась → у нас USDT
+          const received = f.amount * f.price * (1 - commissionSell); // выручка продажи за вычетом комиссии
+          const usdt = bal.USDT < received ? bal.USDT + received : bal.USDT;
+          room = usdt / targetPrice;
+        }
         const affordable = engine.floorTo(room * TOPUP_SAFETY, baseDec);
         const topped = Math.min(q0, affordable);
         if (topped > qty) qty = topped;
