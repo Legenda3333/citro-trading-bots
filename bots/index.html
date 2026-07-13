@@ -93,6 +93,12 @@
       </div>
     </div>
 
+    <!-- Загрузка (пока идёт запрос к серверу). Виден по умолчанию → нет пустоты; JS прячет при отрисовке. -->
+    <div class="list-loading" id="bots-loading">
+      <div class="spinner"></div>
+      <p>Загрузка…</p>
+    </div>
+
     <!-- Пустое состояние: ботов ещё нет -->
     <div class="bots-empty" id="bots-empty" style="display:none">
       <div class="empty-icon-wrap">
@@ -194,7 +200,7 @@
         </p>
         <!-- Прогресс отмены ордеров (показывается после нажатия «Остановить») -->
         <div class="stop-progress" id="stop-progress" hidden>
-          <div class="bot-spinner"></div>
+          <div class="spinner"></div>
           <p class="stop-progress-text" id="stop-progress-text">Отмена ордеров…</p>
         </div>
       </div>

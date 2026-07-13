@@ -119,6 +119,8 @@ document.addEventListener('visibilitychange', () => {
 
 // РЕНДЕР: пустое состояние или список карточек
 function renderBots(bots) {
+  const loadingEl = document.getElementById('bots-loading');
+  if (loadingEl) loadingEl.style.display = 'none';   // прячем индикатор загрузки
   const emptyEl = document.getElementById('bots-empty');
   const listEl  = document.getElementById('bots-list');
   const cardsEl = document.getElementById('bot-list-cards');

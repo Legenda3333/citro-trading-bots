@@ -822,3 +822,30 @@ html::-webkit-scrollbar-thumb:hover {
   .modal-bd { padding: 18px; }
   .modal-ft { padding: 14px 18px 18px; flex-wrap: wrap; }
 }
+
+
+/*
+   ЕДИНЫЙ СПИННЕР ЗАГРУЗКИ — одинаковый на всех страницах (статистика, боты,
+   ключи, график). Собственное имя keyframes, чтобы не задеть анимации кнопок.
+ */
+.spinner {
+  width: 30px;
+  height: 30px;
+  border: 3px solid rgba(255, 255, 255, 0.12);
+  border-top-color: var(--accent);
+  border-radius: 50%;
+  animation: spinner-spin 0.8s linear infinite;
+}
+@keyframes spinner-spin { to { transform: rotate(360deg); } }
+
+/* Контейнер состояния загрузки списка (по центру, как на статистике) */
+.list-loading {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  padding: 60px 20px;
+  color: var(--muted);
+  font-size: 0.9rem;
+}

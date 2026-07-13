@@ -330,6 +330,8 @@ document.addEventListener('visibilitychange', () => {
 // РЕНДЕР КАРТОЧЕК КЛЮЧЕЙ
 // Переключает между пустым состоянием и списком
 function renderKeys(keys) {
+  const loadingEl = document.getElementById('keys-loading');
+  if (loadingEl) loadingEl.style.display = 'none';   // прячем индикатор загрузки
   const emptyEl = document.getElementById('keys-empty');
   const listEl  = document.getElementById('keys-list');
   const cardsEl = document.getElementById('keys-cards');

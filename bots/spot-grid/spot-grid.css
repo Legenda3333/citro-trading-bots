@@ -719,14 +719,7 @@
 }
 
 /* Крутящийся спиннер */ 
-.loading-spinner {
-  width: 28px;
-  height: 28px;
-  border: 2px solid var(--border);
-  border-top-color: var(--accent);
-  border-radius: 50%;
-  animation: spin 0.75s linear infinite;
-}
+/* Спиннер — общий .spinner в style.css (keyframes spin ниже используют кнопки) */
 
 @keyframes spin {
   to { transform: rotate(360deg); }
