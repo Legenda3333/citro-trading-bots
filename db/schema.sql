@@ -223,6 +223,104 @@ end;
 $$;
 
 
+--  apply_fills: АТОМАРНАЯ реакция на исполнение ордеров сетки (вызывает воркер).
+--  Одной транзакцией: (1) помечает исполнившиеся ордера 'filled' — освобождая их
+--  уровни в уникальном индексе bot_orders_active_level; (2) вставляет встречные
+--  ордера ('placing') — уровни к этому моменту уже свободны, поэтому НИ цепочка
+--  соседних исполнений, НИ «кольцевой» случай (покупка и соседняя продажа в один
+--  тик) не упрутся в индекс и не «потеряют» встречный ордер; (3) идемпотентно
+--  пишет сделки в bot_trades. Всё применяется ЦЕЛИКОМ либо никак: при сбое ордера
+--  остаются 'open' и распознаются как исполнения снова на следующем тике.
+--
+--  ВАЖНО: применять схему ДО деплоя воркера — воркер вызывает эту функцию, и без
+--  неё реакция на исполнение будет откладываться (безопасно: без потери ордеров).
+--
+--  p_source_ids — id строк bot_orders исполнившихся ордеров → 'filled';
+--  p_counters   — [{level_index, side, price, amount}] встречные к постановке;
+--  p_trades     — [{exchange_order_id, side, kind, level_index, price, amount,
+--                   total, fee, raw, filled_at}] сделки для статистики.
+--  Возвращает jsonb-массив реально вставленных встречных [{id, level_index, side,
+--  price, amount}] — их воркер и выставляет на бирже.
+create or replace function public.apply_fills(
+  p_bot_id     uuid,
+  p_source_ids uuid[],
+  p_counters   jsonb,
+  p_trades     jsonb
+) returns jsonb
+language plpgsql
+as $$
+declare
+  v_counter jsonb;
+  v_trade   jsonb;
+  v_id      uuid;
+  v_out     jsonb := '[]'::jsonb;
+begin
+  -- 1) Освобождаем уровни исполнившихся ордеров (снимается уникальный индекс уровня).
+  if p_source_ids is not null and array_length(p_source_ids, 1) is not null then
+    update public.bot_orders
+       set status = 'filled', updated_at = now()
+     where bot_id = p_bot_id
+       and id = any (p_source_ids)
+       and status in ('open', 'placing');
+  end if;
+
+  -- 2) Встречные ордера. Уровни уже свободны В ЭТОЙ транзакции. Если уровень всё же
+  --    занят ЖИВЫМ (не исполнившимся) ордером — тихо пропускаем (правило «только
+  --    если пусто»); вложенный BEGIN..EXCEPTION не даёт такому конфликту оборвать
+  --    всю транзакцию.
+  for v_counter in select * from jsonb_array_elements(coalesce(p_counters, '[]'::jsonb))
+  loop
+    begin
+      insert into public.bot_orders (bot_id, level_index, side, price, amount, status)
+      values (
+        p_bot_id,
+        (v_counter->>'level_index')::int,
+        (v_counter->>'side'),
+        (v_counter->>'price')::numeric,
+        (v_counter->>'amount')::numeric,
+        'placing'
+      )
+      returning id into v_id;
+
+      v_out := v_out || jsonb_build_array(jsonb_build_object(
+        'id',          v_id,
+        'level_index', (v_counter->>'level_index')::int,
+        'side',        (v_counter->>'side'),
+        'price',       (v_counter->>'price')::numeric,
+        'amount',      (v_counter->>'amount')::numeric
+      ));
+    exception when unique_violation then
+      null;   -- уровень занят живым ордером — встречный не нужен
+    end;
+  end loop;
+
+  -- 3) Идемпотентно фиксируем сделки для статистики (дубль по (bot_id,
+  --    exchange_order_id, kind) не задвоит прибыль).
+  for v_trade in select * from jsonb_array_elements(coalesce(p_trades, '[]'::jsonb))
+  loop
+    insert into public.bot_trades
+      (bot_id, exchange_order_id, side, kind, level_index, price, amount, total, fee, raw, filled_at)
+    values (
+      p_bot_id,
+      nullif(v_trade->>'exchange_order_id', ''),
+      (v_trade->>'side'),
+      coalesce(nullif(v_trade->>'kind', ''), 'fill'),
+      nullif(v_trade->>'level_index', '')::int,
+      nullif(v_trade->>'price', '')::numeric,
+      nullif(v_trade->>'amount', '')::numeric,
+      nullif(v_trade->>'total', '')::numeric,
+      nullif(v_trade->>'fee', '')::numeric,
+      v_trade->'raw',
+      nullif(v_trade->>'filled_at', '')::timestamptz
+    )
+    on conflict (bot_id, exchange_order_id, kind) do nothing;
+  end loop;
+
+  return v_out;
+end;
+$$;
+
+
 --  RLS (Row Level Security)
 --  В проде RLS включён на всех таблицах, публичных политик нет: публичный REST
 --  (anon-ключ) не отдаёт ни строки, а приложение ходит только через service-role,

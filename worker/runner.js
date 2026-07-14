@@ -251,20 +251,6 @@ async function reconcileBot(bot, ctx, deps) {
   return placed;
 }
 
-// Запись «намерения» ОДНОГО встречного ордера. Возвращает строку {id} или
-// null, если уровень уже занят (23505) — тогда встречный не нужен.
-async function insertCounterIntent(supabase, bot, levelIndex, side, price, qty, log) {
-  return withRetry(async () => {
-    const res = await supabase.from('bot_orders')
-      .insert({ bot_id: bot.id, level_index: levelIndex, side, price, amount: qty, status: 'placing' })
-      .select('id').single()
-      .abortSignal(AbortSignal.timeout(SB_TIMEOUT_MS));
-    if (!res.error) return res.data;
-    if (res.error.code === '23505') return null;     // уровень уже занят — встречный не ставим
-    const e = new Error(res.error.message || 'insert error'); e.code = res.error.code; throw e;
-  }, { attempts: 4, label: `встречный: запись ур.${levelIndex}`, log });
-}
-
 // Выставление встречного ордера по уже записанной строке намерения.
 // Идемпотентно: если ордер с такой (стороной, ценой) уже на бирже — усыновляем.
 // При ошибке create_order строка остаётся 'placing' → её достроит reconcileBot.
@@ -292,13 +278,20 @@ async function placeCounterOrder(deps, bot, row, side, price, qty, activeOrders)
 
 // РЕАКЦИЯ НА ИСПОЛНЕНИЕ
 // Открытый ордер, исчезнувший из active_orders у АКТИВНОГО бота, считаем
-// исполненным (мы его не отменяли). Записываем сделку, помечаем 'filled' и
-// ставим встречный на соседний уровень — ТОЛЬКО если тот уровень пуст.
+// исполненным (мы его не отменяли). Ставим встречный на соседний уровень —
+// ТОЛЬКО если тот уровень пуст:
 //   buy исполнен на уровне i  → SELL на i+1 (выше);
 //   sell исполнен на уровне i → BUY  на i-1 (ниже).
-// ВАЖНО для надёжности: исполнение «закрываем» (пишем сделку + filled) лишь
-// ПОСЛЕ того, как намерение встречного записано в БД (или встречный не нужен).
-// Если намерение записать не удалось — не закрываем, повторим на следующем тике.
+//
+// АТОМАРНОСТЬ. Закрытие исполнений (filled) + вставку встречных ('placing') +
+// запись сделок делаем ОДНИМ вызовом apply_fills (одна транзакция в БД). Внутри
+// транзакция СНАЧАЛА освобождает уровни исполнившихся ордеров, и лишь ПОТОМ
+// вставляет встречные — поэтому уникальный индекс уровня не может «съесть»
+// встречный ни при цепочке соседних исполнений, ни в «кольцевом» случае (покупка
+// и соседняя продажа в один тик). Применяется всё либо целиком, либо никак: при
+// сбое ордера остаются 'open' и будут распознаны как исполнения снова на след.
+// тике. Реальные create_order на бирже делаем ПОСЛЕ коммита (по вставленным
+// строкам); ошибка постановки оставляет строку 'placing' — её доставит reconcileBot.
 async function handleFills(bot, botRows, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const { activeOrders = [], baseDec = 2, priceDec = 5, minQty = 1, minAmt = 0.1,
@@ -343,29 +336,12 @@ async function handleFills(bot, botRows, ctx, deps) {
   const occupied = new Set(botRows.filter(r => r.status === 'open' || r.status === 'placing').map(r => r.level_index));
   for (const f of filled) occupied.delete(f.level_index);
 
-  // ПОРЯДОК ОБРАБОТКИ — защита от «дыры» в сетке при залповом исполнении.
-  // Когда в ОДНОМ тике исполняется несколько соседних ордеров одной стороны, встречный
-  // одного из них целится в уровень соседа. В БД уровень освобождается только когда
-  // строка соседа помечена 'filled' (снимается уникальный индекс уровня). Если сосед,
-  // ЗАНИМАЮЩИЙ нужный уровень, ещё не обработан, вставка встречного упрётся в его живую
-  // строку (23505) и встречный будет молча пропущен — уровень останется пустым (сетка
-  // «худеет» на 1 ордер). Поэтому обрабатываем так, чтобы сосед, освобождающий целевой
-  // уровень, шёл ПЕРВЫМ:
-  //   • продажа (встречный вниз, ур.−1): по ВОЗРАСТАНИЮ уровня — ур.7 раньше ур.8,
-  //     тогда к моменту встречного от ур.8 уровень 7 уже свободен;
-  //   • покупка (встречный вверх, ур.+1): по УБЫВАНИЮ уровня — симметрично.
-  // Порядок между покупками и продажами не важен (их цепочки не пересекаются).
-  filled.sort((a, b) => {
-    const ka = a.side === 'sell' ?  a.level_index : -a.level_index;
-    const kb = b.side === 'sell' ?  b.level_index : -b.level_index;
-    return ka - kb;
-  });
-
+  // 1) ОТМЕНЫ обрабатываем отдельно от исполнений. Если ордер снят на бирже
+  //    (orders_history: canceled, ничего не исполнено) — это НЕ сделка. Бот активен
+  //    → ВОССТАНАВЛИВАЕМ сетку: ставим такой же лимитный ордер, встречный не ставим,
+  //    статус не трогаем. Остальные — реальные исполнения — идут в атомарный батч.
+  const realFills = [];
   for (const f of filled) {
-    // ОТМЕНА vs ИСПОЛНЕНИЕ по orders_history. Если ордер отменён (status
-    // canceled, ничего не исполнено) — это НЕ сделка (пользователь/биржа сняли
-    // его). Бот активен → ВОССТАНАВЛИВАЕМ сетку: ставим такой же лимитный ордер,
-    // встречный не ставим, статус не трогаем.
     const hc = histMap.get(String(f.exchange_order_id));
     if (hc && hc.status && /cancel/i.test(hc.status) && !(Number.isFinite(hc.amount) && hc.amount > 1e-9)) {
       try {
@@ -379,14 +355,28 @@ async function handleFills(bot, botRows, ctx, deps) {
         log(`  ! не удалось восстановить ур.${f.level_index}: ${e.message} — повтор на следующем тике`);
       }
       occupied.add(f.level_index); // уровень снова занят — другие встречные сюда не целятся
-      continue;
+    } else {
+      realFills.push(f);
     }
+  }
+  if (realFills.length === 0) return;
 
+  // 2) Готовим БАТЧ для атомарного применения: id к закрытию (sourceIds), встречные
+  //    к постановке (counters) и сделки (trades). Решение «ставить ли встречный»
+  //    принимаем по in-memory occupied (уже без исполнившихся уровней): встречный не
+  //    нужен, если уровень занят ЖИВЫМ ордером или на него уже нацелен другой
+  //    встречный из этого же тика. Порядок обработки на корректность не влияет —
+  //    гонку уровней снимает сама транзакция (см. apply_fills).
+  const sourceIds = [];
+  const counters  = [];   // {level_index, side, price, amount}
+  const trades    = [];
+
+  for (const f of realFills) {
     log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})`);
+    sourceIds.push(f.id);
 
     const targetIdx  = f.side === 'buy' ? f.level_index + 1 : f.level_index - 1;
     const targetSide = f.side === 'buy' ? 'sell' : 'buy';
-    let counterSecured = true; // можно ли закрывать исполнение
 
     if (targetIdx < 0 || targetIdx > count) {
       log(`  · встречный вне диапазона сетки (ур.${targetIdx}) — пропуск`);
@@ -429,33 +419,21 @@ async function handleFills(bot, botRows, ctx, deps) {
       if (qty < minQty || qty * targetPrice < minAmt) {
         log(`  · встречный ${targetSide} ${qty} @ ${targetPrice} ниже минимума биржи — пропуск`);
       } else {
-        try {
-          const row = await insertCounterIntent(supabase, bot, targetIdx, targetSide, targetPrice, qty, log);
-          if (row === null) {
-            log(`  · уровень ${targetIdx} уже занят (гонка) — встречный не нужен`);
-          } else {
-            occupied.add(targetIdx);
-            // Резервируем занятые средства в локальном учёте, чтобы следующее
-            // исполнение в этом же тике не пообещало те же деньги повторно.
-            if (bal) {
-              if (targetSide === 'sell') bal.CITRO -= qty;
-              else                       bal.USDT  -= qty * targetPrice;
-            }
-            await placeCounterOrder(deps, bot, row, targetSide, targetPrice, qty, activeOrders);
-            if (qty > fallbackQty) log(`  ↑ объём встречного добран до ${qty} (старт ${q0})`);
-          }
-        } catch (e) {
-          counterSecured = false; // намерение встречного не записано → исполнение НЕ закрываем
-          log(`  ! встречный к ур.${f.level_index} не записан (${e.message}) — закроем исполнение на следующем тике`);
+        counters.push({ level_index: targetIdx, side: targetSide, price: targetPrice, amount: qty });
+        occupied.add(targetIdx); // в этом же тике другой встречный сюда уже не целится
+        // Резервируем занятые средства в локальном учёте, чтобы следующее
+        // исполнение в этом же тике не пообещало те же деньги повторно.
+        if (bal) {
+          if (targetSide === 'sell') bal.CITRO -= qty;
+          else                       bal.USDT  -= qty * targetPrice;
         }
+        if (qty > fallbackQty) log(`  ↑ объём встречного добран до ${qty} (старт ${q0})`);
       }
     }
 
-    if (!counterSecured) continue; // не пишем сделку и не помечаем filled — повтор на следующем тике
-
-    // ФАКТ исполнения: цена/объём/комиссия из orders_history. Если ордера там ещё
-    // нет — цена лимитки и наш объём точны для полностью исполненной лимитки, а
-    // комиссию считаем по реальной ставке из markets (в QUOTE/USDT, на обе стороны).
+    // ФАКТ исполнения для статистики: цена/объём/комиссия из orders_history. Если
+    // ордера там ещё нет — цена лимитки и наш объём точны для полностью исполненной
+    // лимитки, а комиссию считаем по реальной ставке из markets (в USDT).
     const h          = histMap.get(String(f.exchange_order_id)) || {};
     const fillPrice  = Number.isFinite(h.price)  ? h.price  : (f.price  != null ? Number(f.price)  : null);
     const fillAmount = Number.isFinite(h.amount) ? h.amount : (f.amount != null ? Number(f.amount) : null);
@@ -471,35 +449,39 @@ async function handleFills(bot, botRows, ctx, deps) {
       fillFee   = (fillPrice != null && fillAmount != null) ? rate * fillPrice * fillAmount : null;
       feeSource = 'estimate';
     }
+    trades.push({
+      exchange_order_id: f.exchange_order_id || null,
+      side: f.side, kind: 'fill', level_index: f.level_index,
+      price:  fillPrice,
+      amount: fillAmount,
+      total:  (fillPrice != null && fillAmount != null) ? fillPrice * fillAmount : null,
+      fee:    fillFee,
+      raw: { detected: 'gone_from_active_orders', level_index: f.level_index, fee_source: feeSource },
+      filled_at: new Date().toISOString()
+    });
+  }
 
-    // Сделку пишем ИДЕМПОТЕНТНО. Если ордер уже записан (напр. на прошлом тике
-    // пометка filled не прошла и мы попали сюда повторно) — БАЗА сама отклонит
-    // дубль по уникальному индексу (bot_id, exchange_order_id, kind), поэтому
-    // прибыль в статистике не задвоится. upsert с ignoreDuplicates = «вставить, а
-    // при конфликте ничего не делать» — атомарно, без окна между проверкой и вставкой.
-    try {
-      const inserted = await sb(() => supabase.from('bot_trades')
-        .upsert({
-          bot_id: bot.id, exchange_order_id: f.exchange_order_id || null, side: f.side, kind: 'fill',
-          price:  fillPrice,
-          amount: fillAmount,
-          total:  (fillPrice != null && fillAmount != null) ? fillPrice * fillAmount : null,
-          fee:    fillFee,
-          raw: { detected: 'gone_from_active_orders', level_index: f.level_index, fee_source: feeSource },
-          filled_at: new Date().toISOString()
-        }, { onConflict: 'bot_id,exchange_order_id,kind', ignoreDuplicates: true })
-        .select('id'),
-        { label: 'bot_trades (fill)', log, attempts: 2 });
-      if (!(inserted && inserted.length)) {
-        log(`  · сделка по id=${f.exchange_order_id} уже записана — повтор пропущен`);
-      }
-    } catch (e) {
-      log(`  ! лог исполнения не записан: ${e && e.message}`);
-    }
+  // 3) АТОМАРНОЕ применение одной транзакцией. При сбое (сеть/БД) НИЧЕГО не
+  //    изменилось: ордера остаются 'open' и распознаются как исполнения снова на
+  //    следующем тике. Дубли сделок отсекает уникальный индекс внутри функции.
+  let placedCounters;
+  try {
+    placedCounters = await sb(() => supabase.rpc('apply_fills', {
+      p_bot_id:     bot.id,
+      p_source_ids: sourceIds,
+      p_counters:   counters,
+      p_trades:     trades
+    }), { label: 'apply_fills (атомарное закрытие исполнений)', log, attempts: 3 });
+  } catch (e) {
+    log(`  ! атомарное закрытие исполнений не удалось (${e.message}) — повтор на следующем тике`);
+    return;
+  }
 
-    await sb(() => supabase.from('bot_orders')
-      .update({ status: 'filled', updated_at: new Date().toISOString() })
-      .eq('id', f.id), { label: `bot_orders→filled ур.${f.level_index}`, log }).catch((e) => log(`  ! не пометил filled ур.${f.level_index}: ${e.message}`));
+  // 4) Выставляем встречные на бирже по строкам, реально созданным в БД. Идемпотентно:
+  //    если такой ордер уже на бирже — усыновляем; при ошибке строка остаётся
+  //    'placing' и её доставит reconcileBot на следующем тике.
+  for (const c of (placedCounters || [])) {
+    await placeCounterOrder(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders);
   }
 }
 
