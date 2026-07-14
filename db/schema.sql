@@ -14,7 +14,7 @@
 --  Как применить: Supabase → SQL Editor → вставить весь файл → Run.
 
 
--- users: пользователи (логин + bcrypt-хэш пароля)
+-- users: пользователи (логин + bcrypt-хэш пароля) 
 create table if not exists public.users (
   id uuid not null default gen_random_uuid (),
   username character varying(30) not null,
