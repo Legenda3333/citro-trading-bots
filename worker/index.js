@@ -142,7 +142,7 @@ async function handleReconcile() {
   let rows;
   try {
     rows = await sb(() => supabase.from('bot_orders')
-      .select('id, bot_id, level_index, side, price, amount, status, exchange_order_id')
+      .select('id, bot_id, level_index, side, price, amount, status, exchange_order_id, partial')
       .in('bot_id', ids).in('status', ['open', 'placing']),
       { label: 'чтение текущих ордеров', log });
   } catch (e) { log('ошибка чтения bot_orders:', e.message); return; }

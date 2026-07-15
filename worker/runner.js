@@ -51,6 +51,17 @@ function findActive(active, side, price) {
   return (active || []).find((o) => o.side === side && priceEq(o.price, price)) || null;
 }
 
+// Комиссия ОДНОГО исполнения в USDT. Из orders_history комиссия приходит в
+// ПОЛУЧЕННОМ активе: покупка → в CITRO (base) → умножаем на цену; продажа → уже в
+// USDT (quote). Если истории нет — оцениваем по ставке из markets (в USDT).
+// price у нас всегда известна (bot_orders.price NOT NULL), поэтому вернём число.
+function feeUsdt(side, hist, price, base, rate) {
+  if (hist && Number.isFinite(hist.fee)) {
+    return (side === 'buy' && price != null) ? hist.fee * price : hist.fee;
+  }
+  return (price != null && base != null) ? rate * price * base : 0;
+}
+
 // Запись ВСЕХ намерений сетки одним батчем (атомарно). Уникальный индекс
 // (bot_id, level_index) where status in (placing,open) защищает от дублей:
 // если строки уже созданы (ответ прошлой попытки потерялся) — батч упрётся в
@@ -251,17 +262,18 @@ async function reconcileBot(bot, ctx, deps) {
   return placed;
 }
 
-// Выставление встречного ордера по уже записанной строке намерения.
-// Идемпотентно: если ордер с такой (стороной, ценой) уже на бирже — усыновляем.
-// При ошибке create_order строка остаётся 'placing' → её достроит reconcileBot.
-async function placeCounterOrder(deps, bot, row, side, price, qty, activeOrders) {
+// Выставление ордера по уже записанной строке ('placing') → 'open'. Идемпотентно:
+// если ордер с такой (стороной, ценой) уже на бирже — усыновляем. При ошибке
+// create_order строка остаётся 'placing' → её достроит reconcileBot. what — только
+// для лога («встречный» при постановке counter-ордера, «остаток» при дозаполнении).
+async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = 'ордер') {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const m = findActive(activeOrders, side, price);
   if (m) {
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
-      .eq('id', row.id), { label: `встречный adopt ур.`, log }).catch(() => {});
-    log(`  ✓ встречный ${side} @ ${price}: уже на бирже (id=${m.id}) — усыновлён`);
+      .eq('id', row.id), { label: `${what} adopt`, log }).catch(() => {});
+    log(`  ✓ ${what} ${side} @ ${price}: уже на бирже (id=${m.id}) — усыновлён`);
     return;
   }
   try {
@@ -269,28 +281,31 @@ async function placeCounterOrder(deps, bot, row, side, price, qty, activeOrders)
       { symbol: SYMBOL, action: side, type: 'limit', price: String(price), amount: String(qty) }, apiKey, secret);
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
-      .eq('id', row.id), { label: 'встречный→open', log });
-    log(`  ✓ встречный ${side} ${qty} CITRO @ ${price} → id=${res.id} (${res.status})`);
+      .eq('id', row.id), { label: `${what}→open`, log });
+    log(`  ✓ ${what} ${side} ${qty} CITRO @ ${price} → id=${res.id} (${res.status})`);
   } catch (e) {
-    log(`  ✗ встречный ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
   }
 }
 
 // РЕАКЦИЯ НА ИСПОЛНЕНИЕ
 // Открытый ордер, исчезнувший из active_orders у АКТИВНОГО бота, считаем
-// исполненным (мы его не отменяли). Ставим встречный на соседний уровень —
-// ТОЛЬКО если тот уровень пуст:
-//   buy исполнен на уровне i  → SELL на i+1 (выше);
-//   sell исполнен на уровне i → BUY  на i-1 (ниже).
+// исполненным (мы его не отменяли). Встречный ставим на соседний уровень (buy на
+// i → sell на i+1; sell на i → buy на i-1) — ТОЛЬКО если тот уровень пуст.
 //
-// АТОМАРНОСТЬ. Закрытие исполнений (filled) + вставку встречных ('placing') +
-// запись сделок делаем ОДНИМ вызовом apply_fills (одна транзакция в БД). Внутри
-// транзакция СНАЧАЛА освобождает уровни исполнившихся ордеров, и лишь ПОТОМ
-// вставляет встречные — поэтому уникальный индекс уровня не может «съесть»
-// встречный ни при цепочке соседних исполнений, ни в «кольцевом» случае (покупка
-// и соседняя продажа в один тик). Применяется всё либо целиком, либо никак: при
-// сбое ордера остаются 'open' и будут распознаны как исполнения снова на след.
-// тике. Реальные create_order на бирже делаем ПОСЛЕ коммита (по вставленным
+// ЧАСТИЧНОЕ ИСПОЛНЕНИЕ + ОТМЕНА. Если часть ордера исполнилась, а остаток сняли,
+// уровень не закрываем: копим прогресс (bot_orders.partial) и дозаполняем уровень
+// остатком (было − исполнено). Когда уровень доисполнится — пишем ОДНУ сделку на
+// суммарный объём/комиссию (id последнего ордера) и ставим встречный на суммарный
+// объём. Так частичная отмена не «раздувает» встречный и даёт одну чистую сделку.
+//
+// АТОМАРНОСТЬ. Закрытие завершённых уровней (filled) + вставку встречных ('placing')
+// + запись сделок делаем ОДНИМ вызовом apply_fills (одна транзакция в БД). Внутри
+// транзакция СНАЧАЛА освобождает уровни исполнившихся ордеров, и лишь ПОТОМ вставляет
+// встречные — поэтому уникальный индекс уровня не может «съесть» встречный ни при
+// цепочке соседних исполнений, ни в «кольцевом» случае. Применяется всё либо целиком,
+// либо никак: при сбое ордера остаются 'open' и распознаются как исполнения снова на
+// следующем тике. Реальные create_order на бирже делаем ПОСЛЕ коммита (по вставленным
 // строкам); ошибка постановки оставляет строку 'placing' — её доставит reconcileBot.
 async function handleFills(bot, botRows, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
@@ -336,14 +351,23 @@ async function handleFills(bot, botRows, ctx, deps) {
   const occupied = new Set(botRows.filter(r => r.status === 'open' || r.status === 'placing').map(r => r.level_index));
   for (const f of filled) occupied.delete(f.level_index);
 
-  // 1) ОТМЕНЫ обрабатываем отдельно от исполнений. Если ордер снят на бирже
-  //    (orders_history: canceled, ничего не исполнено) — это НЕ сделка. Бот активен
-  //    → ВОССТАНАВЛИВАЕМ сетку: ставим такой же лимитный ордер, встречный не ставим,
-  //    статус не трогаем. Остальные — реальные исполнения — идут в атомарный батч.
-  const realFills = [];
+  // Разбираем каждый исчезнувший ордер на ТРИ случая (по orders_history):
+  //   A. отменён, НИЧЕГО не исполнено → восстанавливаем такой же ордер (не сделка);
+  //   B. отменён, ЧАСТЬ исполнена     → копим прогресс уровня (partial) и переставляем
+  //      ОСТАТОК (объём = было − исполнено). Встречный и сделку пока НЕ делаем — уровень
+  //      ещё не завершён. Если остаток ниже минимума биржи — завершаем уровень на факте (→C);
+  //   C. исполнен полностью            → уровень завершён: ОДНА сделка на суммарный
+  //      объём/комиссию (с учётом ранее накопленного) и встречный на суммарный объём.
+  //      Случаи C собираем в completions и применяем АТОМАРНО (apply_fills).
+  const completions = [];   // {f, base, fee, quote, price} — завершённые уровни
   for (const f of filled) {
-    const hc = histMap.get(String(f.exchange_order_id));
-    if (hc && hc.status && /cancel/i.test(hc.status) && !(Number.isFinite(hc.amount) && hc.amount > 1e-9)) {
+    const hc       = histMap.get(String(f.exchange_order_id)) || {};
+    const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
+    const isCancel = hc.status && /cancel/i.test(hc.status);
+    const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
+
+    // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
+    if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
       try {
         const res = await citronus.createOrder(
           { symbol: SYMBOL, action: f.side, type: 'limit', price: String(f.price), amount: String(f.amount) }, apiKey, secret);
@@ -354,25 +378,65 @@ async function handleFills(bot, botRows, ctx, deps) {
       } catch (e) {
         log(`  ! не удалось восстановить ур.${f.level_index}: ${e.message} — повтор на следующем тике`);
       }
-      occupied.add(f.level_index); // уровень снова занят — другие встречные сюда не целятся
-    } else {
-      realFills.push(f);
+      occupied.add(f.level_index);
+      continue;
     }
-  }
-  if (realFills.length === 0) return;
 
-  // 2) Готовим БАТЧ для атомарного применения: id к закрытию (sourceIds), встречные
-  //    к постановке (counters) и сделки (trades). Решение «ставить ли встречный»
-  //    принимаем по in-memory occupied (уже без исполнившихся уровней): встречный не
-  //    нужен, если уровень занят ЖИВЫМ ордером или на него уже нацелен другой
-  //    встречный из этого же тика. Порядок обработки на корректность не влияет —
-  //    гонку уровней снимает сама транзакция (см. apply_fills).
+    // Факт ЭТОГО куска (из истории; если её нет — по строке). price у нас всегда есть.
+    const pieceBase  = dealsAmt != null ? dealsAmt : Number(f.amount);
+    const rate       = f.side === 'buy' ? commissionBuy : commissionSell;
+    const piecePrice = Number.isFinite(hc.price) ? hc.price : (f.price != null ? Number(f.price) : null);
+    const pieceFee   = feeUsdt(f.side, hc, piecePrice, pieceBase, rate);
+    const pieceQuote = piecePrice != null ? piecePrice * pieceBase : 0;
+
+    // Накопленный ИТОГ уровня = ранее накопленное + этот кусок.
+    const accBase  = (prev ? Number(prev.base)  || 0 : 0) + pieceBase;
+    const accFee   = (prev ? Number(prev.fee)   || 0 : 0) + pieceFee;
+    const accQuote = (prev ? Number(prev.quote) || 0 : 0) + pieceQuote;
+    const accPrice = accBase > 0 && accQuote > 0 ? accQuote / accBase : piecePrice; // средневзвешенная
+
+    // B. Частично исполнен и СНЯТ → дозаполняем уровень остатком (было − исполнено).
+    if (isCancel) {
+      const remaining  = engine.floorTo(Number(f.amount) - pieceBase, baseDec);
+      const levelPrice = engine.roundTo(f.price != null ? Number(f.price) : levels[f.level_index], priceDec);
+      if (remaining >= minQty && remaining * levelPrice >= minAmt) {
+        // Копим прогресс и переставляем ОСТАТОК тем же уровнем/стороной. Идемпотентно:
+        // строка уходит в 'placing' (повторно как исполнение не считается); при сбое
+        // постановки её достроит reconcileBot. Встречный и сделку НЕ делаем — рано.
+        await sb(() => supabase.from('bot_orders')
+          .update({ partial: { base: accBase, fee: accFee, quote: accQuote },
+                    amount: remaining, status: 'placing', exchange_order_id: null,
+                    updated_at: new Date().toISOString() })
+          .eq('id', f.id), { label: `частичное: прогресс ур.${f.level_index}`, log });
+        await placeRow(deps, bot, { id: f.id }, f.side, levelPrice, remaining, activeOrders, 'остаток');
+        log(`  ◐ частично исполнен ${f.side} (ур.${f.level_index}): +${pieceBase}, остаток снят → переставлен ${remaining} (всего по уровню ${accBase})`);
+        occupied.add(f.level_index);
+        continue;
+      }
+      // Остаток ниже минимума биржи — уровень завершаем на фактически исполненном.
+      log(`  ◑ частично исполнен ${f.side} (ур.${f.level_index}): +${pieceBase}; остаток ${remaining} ниже минимума — уровень завершён на ${accBase}`);
+      completions.push({ f, base: accBase, fee: accFee, quote: accQuote, price: accPrice });
+      continue;
+    }
+
+    // C. Полное исполнение (возможно — доисполнение ранее накопленного уровня).
+    if (prev) log(`  ● доисполнен ${f.side} @ ${f.price} (ур.${f.level_index}): +${pieceBase}, всего ${accBase} — id=${f.exchange_order_id}`);
+    else      log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})`);
+    completions.push({ f, base: accBase, fee: accFee, quote: accQuote, price: accPrice });
+  }
+  if (completions.length === 0) return;
+
+  // Готовим АТОМАРНЫЙ батч по ЗАВЕРШЁННЫМ уровням: id к закрытию (sourceIds), встречные
+  // (counters) и сделки (trades). Решение «ставить ли встречный» — по in-memory occupied
+  // (уже без исполнившихся уровней): не нужен, если уровень занят ЖИВЫМ ордером или на
+  // него уже нацелен другой встречный из этого тика. Порядок обработки на корректность
+  // не влияет — гонку уровней снимает сама транзакция (см. apply_fills).
   const sourceIds = [];
   const counters  = [];   // {level_index, side, price, amount}
   const trades    = [];
 
-  for (const f of realFills) {
-    log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})`);
+  for (const c of completions) {
+    const { f, base, fee, quote, price } = c;
     sourceIds.push(f.id);
 
     const targetIdx  = f.side === 'buy' ? f.level_index + 1 : f.level_index - 1;
@@ -384,30 +448,24 @@ async function handleFills(bot, botRows, ctx, deps) {
       log(`  · уровень ${targetIdx} занят — встречный не ставим (правило «только если пусто»)`);
     } else {
       const targetPrice = engine.roundTo(levels[targetIdx], priceDec);
-      // Базовый (безопасный) объём: продажа чуть меньше полученного (комиссия
-      // удержана в CITRO), покупка — полный объём (фундируется из выручки продажи).
+      // Базовый (безопасный) объём считаем от ПОЛНОГО объёма уровня (base): продажа
+      // чуть меньше полученного (комиссия удержана в CITRO), покупка — полный объём.
       const fallbackQty = targetSide === 'sell'
-        ? engine.floorTo(f.amount * (1 - COUNTER_SELL_HAIRCUT), baseDec)
-        : engine.floorTo(f.amount, baseDec);
+        ? engine.floorTo(base * (1 - COUNTER_SELL_HAIRCUT), baseDec)
+        : engine.floorTo(base, baseDec);
 
-      // ДОКОМПЕНСАЦИЯ: стремимся вернуть объём к стартовому q0, добирая недостающее
-      // из накопленной прибыли/пыли. ЖЁСТКИЙ ПОТОЛОК — свободный баланс (× запас):
-      // никогда не ставим больше, чем реально свободно. Не хватает — остаёмся на
-      // базовом объёме. Так позиция не «уползает» вниз со временем.
+      // ДОКОМПЕНСАЦИЯ: стремимся вернуть объём к стартовому q0, добирая недостающее из
+      // накопленной прибыли/пыли. ЖЁСТКИЙ ПОТОЛОК — свободный баланс (× запас): никогда
+      // не ставим больше, чем реально свободно. Полученное от этого уровня (base) может
+      // ещё не отразиться в снимке баланса (задержка зачисления) — учитываем явно.
       let qty = fallbackQty;
       if (q0 > qty && bal) {
-        // Сколько CITRO/USDT реально доступно для встречного ордера. ТОНКОСТЬ:
-        // средства, ТОЛЬКО ЧТО полученные от исполнения, в снимке баланса (взят в
-        // начале тика) могут ещё не отразиться из-за задержки зачисления на бирже.
-        // Поэтому явно учитываем полученное от ЭТОГО исполнения: если снимок «до
-        // зачисления» (меньше полученного) — добавляем полученное; иначе он его
-        // уже включает (не задваиваем).
         let room;
-        if (targetSide === 'sell') {                                  // покупка исполнилась → у нас CITRO
-          const received = f.amount * (1 - commissionBuy);           // CITRO за вычетом комиссии покупки
+        if (targetSide === 'sell') {                                     // покупка → у нас CITRO
+          const received = base * (1 - commissionBuy);
           room = bal.CITRO < received ? bal.CITRO + received : bal.CITRO;
-        } else {                                                      // продажа исполнилась → у нас USDT
-          const received = f.amount * f.price * (1 - commissionSell); // выручка продажи за вычетом комиссии
+        } else {                                                         // продажа → у нас USDT
+          const received = base * (f.price != null ? Number(f.price) : targetPrice) * (1 - commissionSell);
           const usdt = bal.USDT < received ? bal.USDT + received : bal.USDT;
           room = usdt / targetPrice;
         }
@@ -420,9 +478,7 @@ async function handleFills(bot, botRows, ctx, deps) {
         log(`  · встречный ${targetSide} ${qty} @ ${targetPrice} ниже минимума биржи — пропуск`);
       } else {
         counters.push({ level_index: targetIdx, side: targetSide, price: targetPrice, amount: qty });
-        occupied.add(targetIdx); // в этом же тике другой встречный сюда уже не целится
-        // Резервируем занятые средства в локальном учёте, чтобы следующее
-        // исполнение в этом же тике не пообещало те же деньги повторно.
+        occupied.add(targetIdx);
         if (bal) {
           if (targetSide === 'sell') bal.CITRO -= qty;
           else                       bal.USDT  -= qty * targetPrice;
@@ -431,39 +487,23 @@ async function handleFills(bot, botRows, ctx, deps) {
       }
     }
 
-    // ФАКТ исполнения для статистики: цена/объём/комиссия из orders_history. Если
-    // ордера там ещё нет — цена лимитки и наш объём точны для полностью исполненной
-    // лимитки, а комиссию считаем по реальной ставке из markets (в USDT).
-    const h          = histMap.get(String(f.exchange_order_id)) || {};
-    const fillPrice  = Number.isFinite(h.price)  ? h.price  : (f.price  != null ? Number(f.price)  : null);
-    const fillAmount = Number.isFinite(h.amount) ? h.amount : (f.amount != null ? Number(f.amount) : null);
-    const rate = f.side === 'buy' ? commissionBuy : commissionSell;
-    // Комиссия из orders_history приходит в ПОЛУЧЕННОМ активе: покупка → в CITRO
-    // (base), продажа → в USDT (quote). Приводим к USDT: для покупки умножаем на
-    // цену исполнения. Оценка (fallback по ставке) уже считается в USDT.
-    let fillFee, feeSource;
-    if (Number.isFinite(h.fee)) {
-      fillFee   = (f.side === 'buy' && fillPrice != null) ? h.fee * fillPrice : h.fee;
-      feeSource = 'orders_history';
-    } else {
-      fillFee   = (fillPrice != null && fillAmount != null) ? rate * fillPrice * fillAmount : null;
-      feeSource = 'estimate';
-    }
+    // ОДНА сделка на весь уровень (с учётом ранее накопленного). id — ПОСЛЕДНЕГО
+    // ордера; комиссия и объём — суммарные; PnL статистика посчитает от объёма.
     trades.push({
       exchange_order_id: f.exchange_order_id || null,
       side: f.side, kind: 'fill', level_index: f.level_index,
-      price:  fillPrice,
-      amount: fillAmount,
-      total:  (fillPrice != null && fillAmount != null) ? fillPrice * fillAmount : null,
-      fee:    fillFee,
-      raw: { detected: 'gone_from_active_orders', level_index: f.level_index, fee_source: feeSource },
+      price:  price,
+      amount: base,
+      total:  quote > 0 ? quote : (price != null ? price * base : null),
+      fee:    fee,
+      raw: { detected: 'gone_from_active_orders', level_index: f.level_index },
       filled_at: new Date().toISOString()
     });
   }
 
-  // 3) АТОМАРНОЕ применение одной транзакцией. При сбое (сеть/БД) НИЧЕГО не
-  //    изменилось: ордера остаются 'open' и распознаются как исполнения снова на
-  //    следующем тике. Дубли сделок отсекает уникальный индекс внутри функции.
+  // АТОМАРНОЕ применение одной транзакцией. При сбое (сеть/БД) НИЧЕГО не изменилось:
+  // ордера остаются 'open' и распознаются как исполнения снова на следующем тике.
+  // Дубли сделок отсекает уникальный индекс внутри функции.
   let placedCounters;
   try {
     placedCounters = await sb(() => supabase.rpc('apply_fills', {
@@ -477,11 +517,10 @@ async function handleFills(bot, botRows, ctx, deps) {
     return;
   }
 
-  // 4) Выставляем встречные на бирже по строкам, реально созданным в БД. Идемпотентно:
-  //    если такой ордер уже на бирже — усыновляем; при ошибке строка остаётся
-  //    'placing' и её доставит reconcileBot на следующем тике.
+  // Выставляем встречные на бирже по реально созданным строкам (идемпотентно): если
+  // ордер уже на бирже — усыновляем; при ошибке строка остаётся 'placing' → reconcileBot.
   for (const c of (placedCounters || [])) {
-    await placeCounterOrder(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders);
+    await placeRow(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders, 'встречный');
   }
 }
 
@@ -496,11 +535,37 @@ async function stopBot(bot, ctx, deps) {
   let rows;
   try {
     rows = await sb(() => supabase.from('bot_orders')
-      .select('id, exchange_order_id, side, price, status')
+      .select('id, exchange_order_id, side, price, status, level_index, partial')
       .eq('bot_id', bot.id)
       .in('status', ['open', 'placing']), { label: 'чтение ордеров для отмены', log });
   } catch (e) { log(`✗ stopBot чтение ордеров: ${e.message}`); return; }
   if (!rows || rows.length === 0) return;
+
+  // Перед снятием фиксируем в статистику УЖЕ исполненную часть уровней, которые
+  // дозаполнялись остатком (partial). Иначе этот реально исполненный объём потеряется
+  // из PnL при остановке. Идемпотентно — дубль отсекает уникальный индекс сделок.
+  for (const row of rows) {
+    const p    = (row.partial && typeof row.partial === 'object') ? row.partial : null;
+    const base = p ? Number(p.base) || 0 : 0;
+    if (base <= 1e-9) continue;
+    const fee   = Number(p.fee)   || 0;
+    const quote = Number(p.quote) || 0;
+    await sb(() => supabase.from('bot_trades')
+      .upsert({
+        bot_id: bot.id,
+        exchange_order_id: row.exchange_order_id || `partial:${row.id}`,
+        side: row.side, kind: 'fill', level_index: row.level_index,
+        price:  quote > 0 ? quote / base : null,
+        amount: base,
+        total:  quote > 0 ? quote : null,
+        fee:    fee,
+        raw: { detected: 'partial_on_stop', level_index: row.level_index },
+        filled_at: new Date().toISOString()
+      }, { onConflict: 'bot_id,exchange_order_id,kind', ignoreDuplicates: true }),
+      { label: `частичное при стопе ур.${row.level_index}`, log, attempts: 2 })
+      .then(() => log(`  ✎ зафиксирована исполненная часть уровня ${row.level_index}: ${base} CITRO`))
+      .catch((e) => log(`  ! частичное при стопе ур.${row.level_index} не записано: ${e.message}`));
+  }
 
   log(`■ остановка "${bot.name}": ${rows.length} ордеров к снятию`);
   let remaining = 0;
