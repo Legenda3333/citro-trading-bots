@@ -1063,9 +1063,45 @@ function setupApiKeyDropdown() {
   const list    = document.getElementById('api-select-list');
   if (!wrapper || !btn || !list) return;
 
-  // Читаем ключи из кэша и вставляем перед уже существующей ссылкой «Добавить новый ключ»
-  const keys    = getApiKeysFromCache();
-  const addLink = list.querySelector('.select-item--action');
+  // 1) СРАЗУ рисуем из кэша: список нужен уже сейчас — сразу после нас setupEditMode()
+  //    в режиме правки выбирает ключ кликом по готовому пункту.
+  renderKeyItems(getApiKeysFromCache());
+
+  // 2) Затем сверяемся с сервером — он источник истины. Ключ мог появиться или пропасть
+  //    в другой вкладке, а кэш об этом не знает. Перерисовываем ТОЛЬКО при реальных
+  //    отличиях, чтобы не дёргать форму под руками. Периодического опроса тут нет
+  //    сознательно: перестраивать список посреди заполнения формы — плохо.
+  apiGet('/api/keys/list')
+    .then(({ keys }) => {
+      const fresh = keys || [];
+      if (JSON.stringify(fresh) === JSON.stringify(getApiKeysFromCache())) return; // без изменений
+      makeCache('apiKeys').write(fresh);
+      renderKeyItems(fresh);
+    })
+    .catch(() => {});   // сеть недоступна — остаёмся на кэше
+
+  // Открываем / закрываем список по клику на кнопку
+  btn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    closeAllDropdowns(wrapper);
+    wrapper.classList.toggle('is-open');
+  });
+}
+
+// Пересобирает пункты списка ключей, СОХРАНЯЯ текущий выбор:
+//   • выбранный ключ на месте → остаётся выбранным (подпись обновляем — его могли переименовать);
+//   • выбранного ключа больше нет (удалён в другой вкладке) → снимаем выбор, иначе форма
+//     ссылалась бы на несуществующий ключ; кнопка создания сама погаснет.
+function renderKeyItems(keys) {
+  const wrapper = document.getElementById('api-select');
+  const btn     = document.getElementById('api-select-btn');
+  const list    = document.getElementById('api-select-list');
+  if (!wrapper || !btn || !list) return;
+
+  const addLink  = list.querySelector('.select-item--action');
+  const selected = wrapper.dataset.selectedKeyId || null;
+
+  list.querySelectorAll('.select-item--key').forEach(el => el.remove());
 
   keys.forEach(key => {
     const item = document.createElement('button');
@@ -1076,23 +1112,14 @@ function setupApiKeyDropdown() {
       <img src="https://citronus.com/favicon.svg" class="option-icon" alt="Citronus" />
       <span>${escapeHtml(key.name)}</span>
     `;
+    if (key.id === selected) item.classList.add('is-active');   // восстанавливаем подсветку
 
     // При выборе ключа — обновляем кнопку-триггер и сохраняем id
     item.addEventListener('click', () => {
       list.querySelectorAll('.select-item--key').forEach(el => el.classList.remove('is-active'));
       item.classList.add('is-active');
 
-      btn.innerHTML = `
-        <div class="select-value">
-          <img src="https://citronus.com/favicon.svg" class="select-val-icon" alt="Citronus" />
-          <span>${escapeHtml(key.name)}</span>
-        </div>
-        <svg class="select-arrow" width="14" height="14" viewBox="0 0 24 24"
-             fill="none" stroke="currentColor" stroke-width="2"
-             stroke-linecap="round" aria-hidden="true">
-          <polyline points="6 9 12 15 18 9"/>
-        </svg>
-      `;
+      setKeyBtnLabel(key);
 
       // Сохраняем выбранный ключ и пересчитываем кнопку создания
       wrapper.dataset.selectedKeyId = key.id;
@@ -1116,12 +1143,45 @@ function setupApiKeyDropdown() {
     list.insertBefore(item, addLink);
   });
 
-  // Открываем / закрываем список по клику на кнопку
-  btn.addEventListener('click', (e) => {
-    e.stopPropagation();
-    closeAllDropdowns(wrapper);
-    wrapper.classList.toggle('is-open');
-  });
+  if (!selected) return;
+  const still = keys.find(k => k.id === selected);
+  if (still) setKeyBtnLabel(still);   // мог смениться только текст (переименование)
+  else       clearKeySelection();     // ключ удалён — честно сбрасываем выбор
+}
+
+// Подпись кнопки-триггера с выбранным ключом
+function setKeyBtnLabel(key) {
+  const btn = document.getElementById('api-select-btn');
+  if (!btn) return;
+  btn.innerHTML = `
+    <div class="select-value">
+      <img src="https://citronus.com/favicon.svg" class="select-val-icon" alt="Citronus" />
+      <span>${escapeHtml(key.name)}</span>
+    </div>
+    <svg class="select-arrow" width="14" height="14" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  `;
+}
+
+// Возврат к исходному состоянию «Выбрать» (как в разметке)
+function clearKeySelection() {
+  const wrapper = document.getElementById('api-select');
+  const btn     = document.getElementById('api-select-btn');
+  if (!wrapper || !btn) return;
+  delete wrapper.dataset.selectedKeyId;
+  currentKeyId = null;
+  btn.innerHTML = `
+    <span class="select-placeholder">Выбрать</span>
+    <svg class="select-arrow" width="14" height="14" viewBox="0 0 24 24"
+         fill="none" stroke="currentColor" stroke-width="2"
+         stroke-linecap="round" aria-hidden="true">
+      <polyline points="6 9 12 15 18 9"/>
+    </svg>
+  `;
+  updateCreateBtn();
 }
 
 // Читает кэш API-ключей (тот же, что наполняет страница API-ключей)
