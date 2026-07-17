@@ -1,8 +1,8 @@
 // СТРАНИЦА «СТАТИСТИКА»
 // Итоги + таблицы «Боты»/«Сделки» по данным /api/bots/list?stats=1.
-// Прибыль РЕАЛИЗОВАННАЯ (FIFO) — считается на сервере (api/_stats.js),
-// клиент только фильтрует, пагинирует и рисует. Загрузка —
-// stale-while-revalidate (как на «Моих ботах»): мгновенно из кэша, затем сверка.
+// Прибыль считает сервер (api/_stats.js, модель «шаг сетки на продажу»);
+// клиент только фильтрует, пагинирует и рисует. Загрузка — fetch-first:
+// показываем загрузку и рисуем СВЕЖИЕ данные; кэш — лишь офлайн-резерв.
 
 const PAGE_SIZE = 10;
 
@@ -40,42 +40,30 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelector('.logout-btn')?.addEventListener('click', logout);
   setupTabs();
   setupFilters();
-  $('stat-retry')?.addEventListener('click', () => { showLoading(); fetchFresh(); });
+  $('stat-retry')?.addEventListener('click', () => { showLoading(); live.refreshNow(); });
 
-  load();
-  if (!document.hidden) startAutoRefresh();
+  showLoading();
+  live.start();
 });
 
 
-// ЗАГРУЗКА (stale-while-revalidate)
+// ЗАГРУЗКА (fetch-first)
 const statsCache = makeCache('stats');         // фабрика кэша — из common.js
 function readCache()  { return statsCache.read(); }
 function writeCache(d) { statsCache.write(d); }
 
-// fetch-first: при заходе показываем загрузку и грузим СВЕЖИЕ данные — старый кэш
-// как актуальный НЕ рисуем. Кэш остаётся только офлайн-резервом (см. fetchFresh).
-function load() {
-  showLoading();
-  fetchFresh();
-}
-
+// Свежие данные: запрос → рисуем. Старый кэш как актуальный НЕ рисуем — он только
+// офлайн-резерв, когда показать ещё нечего. БРОСАЕТ при неудаче: живой обновлятель
+// (common.js) повторит, поэтому страница не замирает на старых данных.
 async function fetchFresh() {
-  const token = localStorage.getItem('token');
   try {
-    const res = await fetch('/api/bots/list?stats=1', {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-
-    if (res.status === 401) { logout(); return; }          // токен истёк/недействителен
-    if (!res.ok) throw new Error('http ' + res.status);
-
-    const fresh = await res.json();
+    const fresh = await apiGet('/api/bots/list?stats=1');
     if (JSON.stringify(fresh) !== JSON.stringify(data)) {   // без лишней перерисовки (важно для опроса)
       data = fresh;
       writeCache(fresh);
       afterData();
     }
-  } catch {
+  } catch (e) {
     // Сервер/сеть недоступны. Если показать ещё нечего — тихо берём офлайн-резерв
     // из кэша; нет и его — состояние ошибки. Если данные уже показаны (напр. упал
     // фоновый опрос) — оставляем текущее, не мигаем ошибкой.
@@ -84,19 +72,14 @@ async function fetchFresh() {
       if (cached) { data = cached; afterData(); }
       else        showError();
     }
+    throw e;   // обновлятелю: не получилось — повтори
   }
 }
 
-// Живое обновление, пока страница ВИДИМА: раз в минуту. Ушёл на другую вкладку —
-// опрос останавливаем (не гоняем лишние запросы); вернулся — сразу обновляем.
-const REFRESH_MS = 60000;
-let refreshTimer = null;
-function startAutoRefresh() { stopAutoRefresh(); refreshTimer = setInterval(fetchFresh, REFRESH_MS); }
-function stopAutoRefresh()  { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = null; }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopAutoRefresh();
-  else { fetchFresh(); startAutoRefresh(); }
-});
+// Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// видима; после сбоя — быстрый повтор; после сна ПК — обновление сразу. См. common.js.
+const live = makeLiveRefresher(fetchFresh);
 
 // Данные получены/обновлены: сортируем ботов, пересобираем фильтры и таблицу.
 // Сделки сервер уже отдаёт новыми сверху (по времени) — порядок не трогаем.
@@ -393,7 +376,7 @@ function onReset() {
   closeAllDropdowns();
   page = 1;
   render();
-  fetchFresh();                       // заодно подтягиваем свежие данные
+  live.refreshNow();                  // заодно подтягиваем свежие данные
 
   setTimeout(() => {
     btn.classList.remove('is-spinning');

@@ -15,7 +15,7 @@ document.addEventListener('DOMContentLoaded', () => {
   setupDeleteModal();
   setupSmartTooltips();
   setupCardActions();   // делегирование кликов по кнопкам «Редактировать»/«Удалить»
-  loadKeys();
+  live.start();
   fillProfile();        // профиль (ник + ID) — общий хелпер из common.js
   document.querySelector('.logout-btn')?.addEventListener('click', logout);
   setupFieldA11y();     // авто-aria-invalid по aria-describedby
@@ -295,36 +295,30 @@ function writeCache(keys) { keysCache.write(keys); }
 // ЗАГРУЗКА КЛЮЧЕЙ (fetch-first)
 // При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
 // Кэш остаётся офлайн-резервом. keysShown нужен, чтобы первый успешный ответ
-// отрисовался, даже если он совпал с кэшем.
+// отрисовался, даже если он совпал с кэшем. БРОСАЕТ при неудаче: живой обновлятель
+// (common.js) повторит, поэтому страница не замирает на старых данных.
 let keysShown = false;
 async function loadKeys() {
   const cached = readCache();
-  const token  = localStorage.getItem('token');
   try {
-    const res = await fetch('/api/keys/list', {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (!res.ok) throw new Error('http ' + res.status);
-
-    const { keys } = await res.json();
+    const { keys } = await apiGet('/api/keys/list');
     const fresh = keys || [];
     if (!keysShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
       writeCache(fresh);
       renderKeys(fresh);
       keysShown = true;
     }
-  } catch {
+  } catch (e) {
     // Сервер/сеть недоступны — ещё ничего не показано → тихо берём офлайн-резерв из кэша.
     if (!keysShown) { renderKeys(cached || []); keysShown = true; }
+    throw e;   // обновлятелю: не получилось — повтори
   }
 }
 
-// Обновляем при ВОЗВРАЩЕНИИ на страницу (напр. после того как бот освободил ключ
-// на другой странице) — чтобы флаг «ключ занят» не отставал. Постоянный опрос
-// ключам не нужен: сами по себе они не меняются, пока страница открыта.
-document.addEventListener('visibilitychange', () => {
-  if (!document.hidden) loadKeys();
-});
+// Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// видима. Важно для флага «ключ занят»: он меняется, когда бот освобождает ключ.
+const live = makeLiveRefresher(loadKeys);
 
 
 // РЕНДЕР КАРТОЧЕК КЛЮЧЕЙ

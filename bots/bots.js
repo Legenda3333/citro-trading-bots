@@ -63,8 +63,7 @@ document.addEventListener('DOMContentLoaded', () => {
   document.querySelector('.logout-btn')?.addEventListener('click', logout);
   setupCardActions();  // делегирование кликов по кнопкам карточек
   setupModals();       // закрытие окон «Информация» и «Удаление»
-  loadBots();
-  if (!document.hidden) startAutoRefresh();
+  live.start();
 });
 
 
@@ -79,18 +78,13 @@ function writeCache(bots) { botsCache.write(bots); }
 // ЗАГРУЗКА (fetch-first)
 // При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
 // Кэш остаётся офлайн-резервом. botsShown нужен, чтобы первый успешный ответ
-// отрисовался даже если он совпал с кэшем. Функция используется и при заходе, и при опросе.
+// отрисовался даже если он совпал с кэшем. БРОСАЕТ при неудаче: живой обновлятель
+// (common.js) повторит, поэтому страница не замирает на старых данных.
 let botsShown = false;
 async function loadBots() {
   const cached = readCache();
-  const token  = localStorage.getItem('token');
   try {
-    const res = await fetch('/api/bots/list', {
-      headers: { 'Authorization': 'Bearer ' + token }
-    });
-    if (!res.ok) throw new Error('http ' + res.status);
-
-    const { bots } = await res.json();
+    const { bots } = await apiGet('/api/bots/list');
     const fresh = bots || [];
     // Рисуем при первом показе или при реальных изменениях (последнее важно для опроса).
     if (!botsShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
@@ -98,23 +92,18 @@ async function loadBots() {
       renderBots(fresh);
       botsShown = true;
     }
-  } catch {
+  } catch (e) {
     // Сервер/сеть недоступны. Ещё ничего не показано — тихо берём офлайн-резерв из
     // кэша; уже показано (упал фоновый опрос) — оставляем текущее.
     if (!botsShown) { renderBots(cached || []); botsShown = true; }
+    throw e;   // обновлятелю: не получилось — повтори
   }
 }
 
-// Живое обновление, пока страница ВИДИМА: раз в минуту. Ушёл на другую вкладку —
-// опрос останавливаем; вернулся — сразу обновляем.
-const REFRESH_MS = 60000;
-let refreshTimer = null;
-function startAutoRefresh() { stopAutoRefresh(); refreshTimer = setInterval(loadBots, REFRESH_MS); }
-function stopAutoRefresh()  { if (refreshTimer) clearInterval(refreshTimer); refreshTimer = null; }
-document.addEventListener('visibilitychange', () => {
-  if (document.hidden) stopAutoRefresh();
-  else { loadBots(); startAutoRefresh(); }
-});
+// Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// видима; после сбоя — быстрый повтор; после сна ПК — обновление сразу. См. common.js.
+const live = makeLiveRefresher(loadBots);
 
 
 // РЕНДЕР: пустое состояние или список карточек
