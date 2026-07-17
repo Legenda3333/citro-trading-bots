@@ -77,27 +77,29 @@ function writeCache(bots) { botsCache.write(bots); }
 
 // ЗАГРУЗКА (fetch-first)
 // При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
-// Кэш остаётся офлайн-резервом. botsShown нужен, чтобы первый успешный ответ
-// отрисовался даже если он совпал с кэшем. БРОСАЕТ при неудаче: живой обновлятель
-// (common.js) повторит, поэтому страница не замирает на старых данных.
-let botsShown = false;
+// Кэш остаётся офлайн-резервом. БРОСАЕТ при неудаче: живой обновлятель (common.js)
+// повторит, поэтому страница не замирает на старых данных.
 async function loadBots() {
-  const cached = readCache();
   try {
     const { bots } = await apiGet('/api/bots/list');
     const fresh = bots || [];
-    // Рисуем при первом показе или при реальных изменениях (последнее важно для опроса).
-    if (!botsShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
-      writeCache(fresh);
-      renderBots(fresh);
-      botsShown = true;
-    }
+    writeCache(fresh);      // кэш обновляем всегда: он офлайн-резерв и его читают другие страницы
+    showBots(fresh);
   } catch (e) {
-    // Сервер/сеть недоступны. Ещё ничего не показано — тихо берём офлайн-резерв из
-    // кэша; уже показано (упал фоновый опрос) — оставляем текущее.
-    if (!botsShown) { renderBots(cached || []); botsShown = true; }
+    if (!rendered) showBots(readCache() || []);   // показать ещё нечего → офлайн-резерв
     throw e;   // обновлятелю: не получилось — повтори
   }
+}
+
+// Рисует список, только если он отличается от УЖЕ НАРИСОВАННОГО в ЭТОЙ вкладке.
+// ВАЖНО: сравнивать со свежими данными нужно именно нарисованное, а НЕ кэш. Кэш общий
+// на все вкладки: удалив бота в соседней вкладке, мы бы поправили общий кэш, и эта
+// вкладка решила бы «ничего не изменилось» — оставив на экране удалённого бота.
+let rendered = null;   // копия того, что реально нарисовано в этой вкладке
+function showBots(bots) {
+  if (rendered && JSON.stringify(bots) === JSON.stringify(rendered)) return;
+  rendered = bots;
+  renderBots(bots);
 }
 
 // Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
@@ -367,7 +369,7 @@ async function confirmBotDelete(botId) {
       if (res.status === 409 && data.code === 'bot_active') {
         const cached = updateBotInCache(botId, { status: 'active' });
         closeOverlay('delete-overlay');
-        renderBots(cached);
+        showBots(cached);
         return;
       }
       btn.disabled = false;
@@ -376,7 +378,7 @@ async function confirmBotDelete(botId) {
 
     const cached = removeBotFromCache(botId);
     closeOverlay('delete-overlay');
-    renderBots(cached);
+    showBots(cached);
 
   } catch {
     btn.disabled    = false;
@@ -502,7 +504,7 @@ async function pollStopCancel(botId, total) {
 function finishStop() {
   resetStopModal();
   closeOverlay('stop-overlay');
-  renderBots(readCache() || []);
+  showBots(readCache() || []);
 }
 
 

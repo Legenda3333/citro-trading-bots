@@ -1065,18 +1065,20 @@ function setupApiKeyDropdown() {
 
   // 1) СРАЗУ рисуем из кэша: список нужен уже сейчас — сразу после нас setupEditMode()
   //    в режиме правки выбирает ключ кликом по готовому пункту.
-  renderKeyItems(getApiKeysFromCache());
+  const shown = getApiKeysFromCache();
+  renderKeyItems(shown);
 
   // 2) Затем сверяемся с сервером — он источник истины. Ключ мог появиться или пропасть
-  //    в другой вкладке, а кэш об этом не знает. Перерисовываем ТОЛЬКО при реальных
+  //    в другой вкладке, а кэш об этом не знает. Сравниваем с тем, что РЕАЛЬНО нарисовали
+  //    (shown), а не с кэшем: кэш общий на все вкладки и мог измениться под нами — тогда
+  //    сравнение с ним соврало бы «не изменилось». Перерисовываем только при реальных
   //    отличиях, чтобы не дёргать форму под руками. Периодического опроса тут нет
   //    сознательно: перестраивать список посреди заполнения формы — плохо.
   apiGet('/api/keys/list')
     .then(({ keys }) => {
       const fresh = keys || [];
-      if (JSON.stringify(fresh) === JSON.stringify(getApiKeysFromCache())) return; // без изменений
       makeCache('apiKeys').write(fresh);
-      renderKeyItems(fresh);
+      if (JSON.stringify(fresh) !== JSON.stringify(shown)) renderKeyItems(fresh);
     })
     .catch(() => {});   // сеть недоступна — остаёмся на кэше
 

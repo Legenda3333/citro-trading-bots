@@ -294,25 +294,45 @@ function writeCache(keys) { keysCache.write(keys); }
 
 // ЗАГРУЗКА КЛЮЧЕЙ (fetch-first)
 // При заходе грузим СВЕЖИЙ список и рисуем его — старый кэш как актуальный НЕ рисуем.
-// Кэш остаётся офлайн-резервом. keysShown нужен, чтобы первый успешный ответ
-// отрисовался, даже если он совпал с кэшем. БРОСАЕТ при неудаче: живой обновлятель
-// (common.js) повторит, поэтому страница не замирает на старых данных.
-let keysShown = false;
+// Кэш остаётся офлайн-резервом. БРОСАЕТ при неудаче: живой обновлятель (common.js)
+// повторит, поэтому страница не замирает на старых данных.
 async function loadKeys() {
-  const cached = readCache();
   try {
     const { keys } = await apiGet('/api/keys/list');
     const fresh = keys || [];
-    if (!keysShown || JSON.stringify(fresh) !== JSON.stringify(cached)) {
-      writeCache(fresh);
-      renderKeys(fresh);
-      keysShown = true;
-    }
+    writeCache(fresh);      // кэш обновляем всегда: он офлайн-резерв и его читают другие страницы
+    showKeys(fresh);
   } catch (e) {
-    // Сервер/сеть недоступны — ещё ничего не показано → тихо берём офлайн-резерв из кэша.
-    if (!keysShown) { renderKeys(cached || []); keysShown = true; }
+    if (!rendered) showKeys(readCache() || []);   // показать ещё нечего → офлайн-резерв
     throw e;   // обновлятелю: не получилось — повтори
   }
+}
+
+// Рисует список, только если он отличается от УЖЕ НАРИСОВАННОГО в ЭТОЙ вкладке.
+// ВАЖНО: сравнивать со свежими данными нужно именно нарисованное, а НЕ кэш. Кэш общий
+// на все вкладки: удалив ключ в соседней вкладке, мы бы поправили общий кэш, и эта
+// вкладка решила бы «ничего не изменилось» — оставив на экране удалённый ключ.
+let rendered = null;   // копия того, что реально нарисовано в этой вкладке
+function showKeys(keys) {
+  if (rendered && JSON.stringify(keys) === JSON.stringify(rendered)) return;
+  rendered = keys;
+  renderKeys(keys);
+}
+
+// Ответы add/update отдают сырую строку БД (+ подсказку): в ней есть лишние user_id и
+// api_secret_encrypted и НЕТ in_use. Приводим к той же форме (и тому же порядку полей),
+// что отдаёт список, — чтобы в localStorage не лежало лишнее, чтобы не терялся in_use
+// и чтобы записи везде сравнивались одинаково.
+function toListShape(key, inUse) {
+  return {
+    id:          key.id,
+    name:        key.name,
+    api_key:     key.api_key,
+    exchange:    key.exchange,
+    created_at:  key.created_at,
+    secret_hint: key.secret_hint,
+    in_use:      !!inUse,
+  };
 }
 
 // Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
@@ -444,10 +464,10 @@ async function addKey() {
     }
 
     const cached = readCache() || [];
-    cached.unshift(data.key);
+    cached.unshift(toListShape(data.key, false));   // новый ключ ботами ещё не занят
     writeCache(cached);
     closeModal();
-    renderKeys(cached);
+    showKeys(cached);
 
   } catch {
     document.getElementById('api-secret-error').textContent = 'Нет соединения с сервером';
@@ -484,13 +504,13 @@ async function updateKey() {
       return;
     }
 
-    // Заменяем ключ в кэше
+    // Заменяем ключ в кэше (in_use правкой не меняется — сохраняем прежний)
     const cached = readCache() || [];
     const idx    = cached.findIndex(k => k.id === editingKey.id);
-    if (idx !== -1) cached[idx] = data.key;
+    if (idx !== -1) cached[idx] = toListShape(data.key, cached[idx].in_use);
     writeCache(cached);
     closeModal();
-    renderKeys(cached);
+    showKeys(cached);
 
   } catch {
     document.getElementById('api-secret-error').textContent = 'Нет соединения с сервером';
@@ -633,7 +653,7 @@ async function confirmDelete(keyId) {
     const cached = (readCache() || []).filter(k => k.id !== keyId);
     writeCache(cached);
     closeDeleteModal();
-    renderKeys(cached);
+    showKeys(cached);
 
   } catch {
     confirmBtn.disabled    = false;
