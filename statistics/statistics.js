@@ -96,11 +96,16 @@ function afterData() {
   render();
 }
 
-// Боты по умолчанию: активные → неактивные → с ошибкой → удалённые, внутри — по имени
+// Боты по умолчанию: активные → неактивные → с ошибкой → удалённые, внутри группы —
+// от новых к старым (по дате создания). При равных датах — по имени, чтобы порядок был
+// стабильным.
 function sortBotsInPlace(arr) {
   arr.sort((a, b) => {
     const ra = STATUS_RANK[a.status] ?? 9, rb = STATUS_RANK[b.status] ?? 9;
-    return ra !== rb ? ra - rb : a.name.localeCompare(b.name, 'ru');
+    if (ra !== rb) return ra - rb;
+    const da = Date.parse(a.createdAt) || 0, db = Date.parse(b.createdAt) || 0;
+    if (db !== da) return db - da;                 // новее — выше
+    return a.name.localeCompare(b.name, 'ru');
   });
 }
 

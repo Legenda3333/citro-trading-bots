@@ -88,7 +88,7 @@ module.exports = async function handler(req, res) {
   if (str(req.query && req.query.stats).trim()) {
     const { data: allBots, error: bErr } = await supabase
       .from('bots')
-      .select('id, name, strategy, status, status_message, config, deleted_at')
+      .select('id, name, strategy, status, status_message, config, deleted_at, created_at')
       .eq('user_id', userId)
       .order('id', { ascending: true });   // стабильный порядок: клиент сравнивает свежий ответ с предыдущим
     if (bErr) {

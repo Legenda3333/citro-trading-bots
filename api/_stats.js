@@ -84,6 +84,7 @@ function computeStats(bots, allTrades, opts = {}) {
       id: bot.id, name: bot.name, type: typeLabel, pair: PAIR,
       pnl: bPnl, fees: bFees, net: bPnl - bFees, volume: bVol,
       trades: fills.length, status: botStatus(bot),
+      createdAt: bot.created_at,   // для сортировки «новые выше» внутри группы статуса
     });
     sumPnl += bPnl; sumFees += bFees; sumVol += bVol; sumCount += fills.length;
   }
