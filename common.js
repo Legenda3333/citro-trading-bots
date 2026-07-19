@@ -104,7 +104,7 @@ window.apiGet = apiGet;
 // setInterval во сне не тикает и мог бы отстать на час; после пробуждения тикер видит,
 // что срок обновления давно прошёл, и обновляет немедленно.
 // refreshFn — async-функция страницы: получает и рисует данные, БРОСАЕТ при неудаче.
-function makeLiveRefresher(refreshFn, { refreshMs = 60000, retryMs = 5000, tickMs = 2000 } = {}) {
+function makeLiveRefresher(refreshFn, { refreshMs = 30000, retryMs = 5000, tickMs = 2000 } = {}) {
   let nextAt = 0, fails = 0, inFlight = false, timer = null;
 
   async function run() {

@@ -336,7 +336,7 @@ function toListShape(key, inUse) {
 }
 
 // Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
-// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в 30 секунд, пока страница
 // видима; после сбоя — быстрый повтор. См. common.js.
 // Опрос здесь по большей части подстраховка: флаг in_use меняется только от действий
 // пользователя на других страницах (создание/удаление бота), а туда-обратно ходят через
@@ -545,7 +545,7 @@ function showModalError(data) {
 function openEditModal(keyId) {
   const cached = readCache() || [];
   const key    = cached.find(k => k.id === keyId);
-  if (!key) return;
+  if (!key) { live.refreshNow(); return; }   // ключ удалили в другой вкладке — пересинхронизируемся
 
   // Запоминаем редактируемый ключ
   editingKey = key;
@@ -577,7 +577,7 @@ function setupDeleteModal() {
 function openDeleteModal(keyId) {
   const cached = readCache() || [];
   const key    = cached.find(k => k.id === keyId);
-  if (!key) return;
+  if (!key) { live.refreshNow(); return; }   // ключ удалили в другой вкладке — пересинхронизируемся
 
   // Вставляем название ключа в текст подтверждения
   document.getElementById('delete-confirm-text').innerHTML =

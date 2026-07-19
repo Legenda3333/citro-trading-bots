@@ -89,7 +89,8 @@ module.exports = async function handler(req, res) {
     const { data: allBots, error: bErr } = await supabase
       .from('bots')
       .select('id, name, strategy, status, status_message, config, deleted_at')
-      .eq('user_id', userId);
+      .eq('user_id', userId)
+      .order('id', { ascending: true });   // стабильный порядок: клиент сравнивает свежий ответ с предыдущим
     if (bErr) {
       console.error('stats bots error:', bErr);
       return res.status(500).json({ error: 'Ошибка сервера' });

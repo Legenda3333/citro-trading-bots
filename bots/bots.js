@@ -103,7 +103,7 @@ function showBots(bots) {
 }
 
 // Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
-// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в 30 секунд, пока страница
 // видима; после сбоя — быстрый повтор; после сна ПК — обновление сразу. См. common.js.
 const live = makeLiveRefresher(loadBots);
 
@@ -288,7 +288,7 @@ function closeOverlay(id) {
 // Окно «Информация о боте» (только сохранённые настройки)
 function openBotInfo(botId) {
   const bot = findBot(botId);
-  if (!bot) return;
+  if (!bot) { live.refreshNow(); return; }   // строку удалили в другой вкладке — пересинхронизируемся
 
   // Заголовок — само название бота (синим, без кавычек); textContent защищает от XSS
   document.getElementById('info-title').textContent = bot.name;
@@ -331,7 +331,7 @@ function openBotInfo(botId) {
 // Окно «Удаление бота»
 function openBotDelete(botId) {
   const bot = findBot(botId);
-  if (!bot) return;
+  if (!bot) { live.refreshNow(); return; }   // строку удалили в другой вкладке — пересинхронизируемся
   if (bot.status === 'active') return; // подстраховка: активного не удаляем
 
   document.getElementById('delete-bot-text').innerHTML =
@@ -393,7 +393,8 @@ async function confirmBotDelete(botId) {
 // и закрываем окно только когда воркер реально снимет все ордера.
 function openBotStop(botId) {
   const bot = findBot(botId);
-  if (!bot || bot.status !== 'active') return;
+  if (!bot) { live.refreshNow(); return; }   // строку удалили в другой вкладке — пересинхронизируемся
+  if (bot.status !== 'active') return;
 
   resetStopModal(); // на случай, если окно осталось в состоянии прогресса
 
@@ -483,7 +484,8 @@ async function pollStopCancel(botId, total) {
     let data;
     try {
       const res = await fetch('/api/bots/list?launchStatus=' + encodeURIComponent(botId), {
-        headers: { 'Authorization': 'Bearer ' + token }
+        headers: { 'Authorization': 'Bearer ' + token },
+        cache: 'no-store',          // прогресс снятия ордеров не берём из кэша браузера
       });
       if (!res.ok) continue;
       data = await res.json();

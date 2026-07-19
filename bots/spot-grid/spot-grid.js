@@ -1923,7 +1923,8 @@ async function launchAndPoll(botId, expected) {
     let data;
     try {
       const res = await fetch('/api/bots/list?launchStatus=' + encodeURIComponent(botId), {
-        headers: { 'Authorization': 'Bearer ' + token }
+        headers: { 'Authorization': 'Bearer ' + token },
+        cache: 'no-store',          // прогресс запуска не берём из кэша браузера
       });
       if (!res.ok) continue;        // временная ошибка сервера — пробуем снова
       data = await res.json();

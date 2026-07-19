@@ -55,10 +55,17 @@ function writeCache(d) { statsCache.write(d); }
 // Свежие данные: запрос → рисуем. Старый кэш как актуальный НЕ рисуем — он только
 // офлайн-резерв, когда показать ещё нечего. БРОСАЕТ при неудаче: живой обновлятель
 // (common.js) повторит, поэтому страница не замирает на старых данных.
+//
+// lastRaw — строковый снимок ПОСЛЕДНЕГО ответа сервера. Свежий ответ сравниваем именно
+// с ним, а не с data: afterData() сортирует data.bots на месте, поэтому сравнение с data
+// почти всегда давало «не равно» и приводило к лишней перерисовке на каждом опросе.
+let lastRaw = null;
 async function fetchFresh() {
   try {
     const fresh = await apiGet('/api/bots/list?stats=1');
-    if (JSON.stringify(fresh) !== JSON.stringify(data)) {   // без лишней перерисовки (важно для опроса)
+    const raw = JSON.stringify(fresh);
+    if (raw !== lastRaw) {          // на сервере действительно что-то изменилось
+      lastRaw = raw;
       data = fresh;
       writeCache(fresh);
       afterData();
@@ -69,7 +76,7 @@ async function fetchFresh() {
     // фоновый опрос) — оставляем текущее, не мигаем ошибкой.
     if (!data) {
       const cached = readCache();
-      if (cached) { data = cached; afterData(); }
+      if (cached) { lastRaw = JSON.stringify(cached); data = cached; afterData(); }
       else        showError();
     }
     throw e;   // обновлятелю: не получилось — повтори
@@ -77,7 +84,7 @@ async function fetchFresh() {
 }
 
 // Живое обновление: сразу при заходе и при каждом возвращении (вкладка снова видима,
-// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в минуту, пока страница
+// фокус окна, «назад» из bfcache, вернулась сеть), далее раз в 30 секунд, пока страница
 // видима; после сбоя — быстрый повтор; после сна ПК — обновление сразу. См. common.js.
 const live = makeLiveRefresher(fetchFresh);
 
