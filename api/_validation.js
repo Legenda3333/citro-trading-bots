@@ -42,7 +42,7 @@ function isUuid(v) {
 const GRID = {
   MIN_USDT_PER_GRID: 1,        // минимум стоимости одного ордера, USDT
   MAX_USDT_PER_GRID: 10000,    // максимум стоимости одного ордера, USDT
-  MIN_STEP_PCT:      0.02,     // шаг сетки ≥ 2% текущей цены
+  MIN_STEP_PCT:      0.01,     // шаг сетки ≥ 1% текущей цены
   COUNT_MIN:         2,
   COUNT_MAX:         100,
   PRICE_TICK:        0.00001,  // шаг цены биржи (CITRO/USDT): уровни не должны совпасть после округления
@@ -126,7 +126,7 @@ function validateSpotGridConfig(config, price) {
     return { ok: false, error: 'Сумма депозита превышает максимально допустимую' };
   }
 
-  // Минимальный шаг сетки ≥ 2% цены (защита от вырожденной сетки)
+  // Минимальный шаг сетки ≥ 1% цены (защита от вырожденной сетки)
   const step = (priceHigh - priceLow) / gridCount;
   if (step < price * GRID.MIN_STEP_PCT * (1 - GRID_TOLERANCE)) {
     return { ok: false, error: 'Слишком маленький шаг сетки' };
