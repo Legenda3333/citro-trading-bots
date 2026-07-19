@@ -512,7 +512,7 @@ function pairHtml(pair) {
 
 function statusBadge(status) {
   const s = STATUS_LABEL[status] || STATUS_LABEL.inactive;
-  return `<span class="stat-badge stat-badge--${s.cls}">${s.label}</span>`;
+  return `<span class="status-badge status-badge--${s.cls}">${s.label}</span>`;
 }
 
 function sideTag(side) {

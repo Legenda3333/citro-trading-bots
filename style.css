@@ -775,6 +775,39 @@ html::-webkit-scrollbar-thumb:hover {
 
 
 /*
+   ПЛАШКА СТАТУСА — единый компонент для всех страниц
+   (статус бота на «Мои боты» и в таблице статистики).
+   Форма задаётся здесь; страничные файлы её больше не переопределяют.
+ */
+.status-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  flex-shrink: 0;          /* длинное имя рядом не сжимает плашку */
+  font-size: 0.75rem;
+  font-weight: 600;
+  line-height: 1;          /* центрирование строго по отступам — текст ровно по центру */
+  padding: 4px 11px;
+  border-radius: 20px;
+  white-space: nowrap;
+}
+
+/* Точка-индикатор перед текстом — берёт цвет статуса */
+.status-badge::before {
+  content: '';
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: currentColor;
+}
+
+.status-badge--active   { color: #22c55e; background: rgba(34, 197, 94, 0.10);  border: 1px solid rgba(34, 197, 94, 0.28); }
+.status-badge--inactive { color: #ff5e6b; background: rgba(255, 94, 107, 0.10); border: 1px solid rgba(255, 94, 107, 0.28); }
+.status-badge--error    { color: #f5a623; background: rgba(245, 166, 35, 0.10); border: 1px solid rgba(245, 166, 35, 0.30); }
+.status-badge--deleted  { color: #8a94a6; background: rgba(138, 148, 166, 0.10); border: 1px solid rgba(138, 148, 166, 0.26); }
+
+
+/*
    АДАПТИВНОСТЬ — ОБЩИЙ КАРКАС
    style.css подключён на всех страницах, поэтому навбар и сетка ботов на
    главной адаптируются здесь сразу для всего сайта. Всё внутри @media —

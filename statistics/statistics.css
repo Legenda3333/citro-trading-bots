@@ -486,30 +486,7 @@
 }
 
 
-/* Бейджи статуса бота */
-.stat-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 6px;
-  font-size: 0.76rem;
-  font-weight: 600;
-  padding: 4px 10px;
-  border-radius: 20px;
-  white-space: nowrap;
-}
-
-.stat-badge::before {
-  content: '';
-  width: 6px;
-  height: 6px;
-  border-radius: 50%;
-  background: currentColor;
-}
-
-.stat-badge--active   { color: #22c55e; background: rgba(34, 197, 94, 0.10);  border: 1px solid rgba(34, 197, 94, 0.28); }
-.stat-badge--inactive { color: #ff5e6b; background: rgba(255, 94, 107, 0.10); border: 1px solid rgba(255, 94, 107, 0.28); }
-.stat-badge--error    { color: #f5a623; background: rgba(245, 166, 35, 0.10); border: 1px solid rgba(245, 166, 35, 0.30); }
-.stat-badge--deleted  { color: #8a94a6; background: rgba(138, 148, 166, 0.10); border: 1px solid rgba(138, 148, 166, 0.26); }
+/* Бейдж статуса бота — единый компонент .status-badge в style.css */
 
 
 /* Сторона сделки (Покупка / Продажа) */

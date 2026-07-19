@@ -149,7 +149,7 @@ function botCardHtml(bot) {
     <div class="mybot-card" data-bot-id="${escapeHtml(bot.id)}">
       <div class="mybot-card-top">
         <h3 class="mybot-name">${escapeHtml(bot.name)}</h3>
-        <span class="mybot-status mybot-status--${status.cls}">${escapeHtml(status.label)}</span>
+        <span class="status-badge status-badge--${status.cls}">${escapeHtml(status.label)}</span>
       </div>
 
       ${errHtml}
