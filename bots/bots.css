@@ -16,18 +16,7 @@
   margin-bottom: 36px;
 }
 
-.page-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.page-title {
-  font-size: 1.45rem;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
+/* .page-title-row / .page-title — общие в style.css */
 
 
 /*
@@ -41,23 +30,7 @@
   padding-top: 48px;
 }
 
-.empty-icon-wrap {
-  width: 80px;
-  height: 80px;
-  background: var(--card);
-  border: 1px solid var(--border);
-  border-radius: 50%;
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  margin-bottom: 24px;
-}
-
-.empty-icon {
-  width: 36px;
-  height: 36px;
-  color: var(--muted);
-}
+/* .empty-icon-wrap / .empty-icon — общие в style.css */
 
 .empty-title {
   font-size: 1rem;
@@ -74,30 +47,7 @@
   max-width: 420px;
 }
 
-/* Кнопка перехода к выбору бота — inline-ширина */
-.bots-empty-btn {
-  display: inline-flex;
-  align-items: center;
-  gap: 8px;
-  padding: 11px 24px;
-  background: var(--accent-bg);
-  color: var(--accent);
-  border: 1px solid rgba(0, 212, 255, 0.22);
-  border-radius: var(--rs);
-  font-size: 0.875rem;
-  font-weight: 600;
-  font-family: inherit;
-  text-decoration: none;
-  cursor: pointer;
-  transition: background .2s, color .2s, border-color .2s, box-shadow .2s;
-}
-
-.bots-empty-btn:hover {
-  background: var(--accent);
-  color: #0e1117;
-  border-color: var(--accent);
-  box-shadow: 0 0 20px rgba(0, 212, 255, 0.18);
-}
+/* Кнопка перехода к выбору бота — общий .btn-accent в style.css */
 
 
 /*
@@ -381,9 +331,6 @@
   display: flex;
 }
 /* Спиннер — общий .spinner в style.css */
-@keyframes bot-spin {
-  to { transform: rotate(360deg); }
-}
 .stop-progress-text {
   font-size: 0.82rem;          /* как у прогресса запуска (.confirm-loading) */
   color: var(--muted);

@@ -23,18 +23,7 @@
   margin-bottom: 28px;
 }
 
-.page-title-row {
-  display: flex;
-  align-items: center;
-  gap: 10px;
-}
-
-.page-title {
-  font-size: 1.45rem;
-  font-weight: 700;
-  color: var(--text);
-  letter-spacing: -0.01em;
-}
+/* .page-title-row / .page-title — общие в style.css */
 
 
 /*
@@ -294,7 +283,7 @@
 /* Один оборот иконки при сбросе — как у кнопки «Обновить баланс»
    на странице настройки (spin-once 0.8s linear). */
 .stat-reset.is-spinning .stat-reset-icon {
-  animation: bot-spin 0.8s linear;
+  animation: spinner-spin 0.8s linear;
 }
 
 
@@ -620,12 +609,7 @@
   border-color: var(--accent);
 }
 
-/* Спиннер загрузки */
-/* Спиннер — общий .spinner в style.css (keyframes bot-spin ниже используют кнопки) */
-
-@keyframes bot-spin {
-  to { transform: rotate(360deg); }
-}
+/* Спиннер — общий .spinner в style.css */
 
 
 /*
