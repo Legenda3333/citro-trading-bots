@@ -34,57 +34,21 @@ function priceEq(a, b) { return Math.abs(a - b) < PRICE_EPS; }
 // Продаём q·0.999 — этого точно хватит из проце́нтов самой сделки (самофундирование).
 // Встречный BUY берёт полный объём: он покупается на USDT по БОЛЕЕ НИЗКОЙ цене, чем
 // продали, поэтому полученного USDT заведомо хватает (запас = шаг сетки).
-const COUNTER_SELL_HAIRCUT = 0.002;   // запас на комиссию И округление (было 0.001); «пыль» добирает докомпенсация
+const COUNTER_SELL_HAIRCUT = 0.001;
 
 // Запас при докомпенсации объёма до стартового: встречный ордер ставим не больше,
 // чем свободный баланс × этот коэффициент — защита от «дрожи» баланса/округления,
 // чтобы ордер гарантированно был обеспечен (тот же смысл, что у хайрката).
 const TOPUP_SAFETY = 0.999;
 
-// Запас при «ужатии под факт»: если на полный объём средств не хватает, ставим не больше
-// свободного баланса × этот коэффициент (та же защита от дрожи/округления, что и выше).
-const FIT_SAFETY = 0.999;
-
 // Сколько тиков подряд «недоставленной» сетки терпим, прежде чем остановить
 // бота с ошибкой (иначе он молча и бесконечно ретраит непроходящие ордера).
 const PLACE_FAIL_MAX = 20;              // ~40 c при тике 2 c
 const placeFailStreak = new Map();      // bot.id → тиков подряд с непоставленными ордерами
 
-// Как долго терпим «ожидание средств» (waiting), прежде чем счесть бота реально
-// застрявшим и показать ошибку. Обычная задержка зачисления — секунды; многие минуты
-// подряд без единой постановки = не транзиент, а реальная нехватка средств. Молча
-// держать такой бот «живым навсегда» нельзя — иначе поломка прячется от пользователя.
-const WAIT_MAX_MS  = 5 * 60 * 1000;     // 5 минут
-const waitingSince = new Map();         // bot.id → время начала непрерывного ожидания средств
-
 // Ищет среди активных ордеров биржи ордер той же стороны и цены.
 function findActive(active, side, price) {
   return (active || []).find((o) => o.side === side && priceEq(o.price, price)) || null;
-}
-
-// Максимально обеспеченный объём по стороне/цене из свободного баланса (× запас),
-// усечённо до точности базовой валюты. sell → нужен CITRO; buy → нужен USDT.
-// bal нет (баланс не получен) → не ограничиваем (ведём себя как раньше).
-function affordableQty(side, price, bal, baseDec) {
-  if (!bal) return Infinity;
-  const free = side === 'sell' ? bal.CITRO : bal.USDT;
-  const raw  = side === 'sell' ? free : (price > 0 ? free / price : 0);
-  return engine.floorTo(Math.max(0, raw) * FIT_SAFETY, baseDec);
-}
-
-// Уменьшить свободный баланс на то, что резервирует поставленный ордер (учёт в снимке
-// на этот тик, чтобы следующие постановки не «потратили» те же средства дважды).
-function reserveFunds(side, price, qty, bal) {
-  if (!bal) return;
-  if (side === 'sell') bal.CITRO -= qty;
-  else                 bal.USDT  -= qty * price;
-}
-
-// Похоже ли на отказ биржи «не хватило средств под ордер». Такую неудачу НЕ считаем
-// фатальной: ордер ужимается под факт либо ждёт зачисления средств — бота не роняем.
-function isInsufficientFunds(e) {
-  const msg = String((e && e.message) || '').toLowerCase();
-  return /средств|удержани|insufficient|not enough|balance|недостаточно/.test(msg);
 }
 
 // Комиссия ОДНОГО исполнения в USDT. Из orders_history комиссия приходит в
@@ -127,7 +91,6 @@ async function reconcileBot(bot, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const active = ctx.activeOrders || [];
   let rows = (ctx.botRows || []).slice();
-  const freshCycle = rows.length === 0;   // свежий запуск (нет ордеров) vs достройка неполной сетки
 
   // СВЕЖИЙ ЦИКЛ: ни одного открытого/размещаемого ордера
   if (rows.length === 0) {
@@ -241,17 +204,9 @@ async function reconcileBot(bot, ctx, deps) {
 
   // РАЗМЕЩЕНИЕ/ДОСТРОЙКА: ставим все строки в статусе 'placing'
   const placingRows = rows.filter((r) => r.status === 'placing');
-  if (placingRows.length === 0) { placeFailStreak.delete(bot.id); waitingSince.delete(bot.id); return 0; } // всё выставлено
+  if (placingRows.length === 0) { placeFailStreak.delete(bot.id); return 0; } // всё выставлено
 
-  // Параметры для «ужатия под факт». bal берём ТОЛЬКО для достройки: в свежем цикле
-  // снимок баланса устарел (обмен произошёл уже внутри этого вызова, а снимок — до него).
-  const market  = ctx.market || {};
-  const baseDec = Number.isInteger(market.trade_base_precision) ? market.trade_base_precision : 2;
-  const minQty  = parseFloat(market.min_order_qty) || 1;
-  const minAmt  = parseFloat(market.min_order_amt) || 0.1;
-  const bal     = freshCycle ? null : (ctx.balance || null);
-
-  let placed = 0, failed = 0, adopted = 0, waiting = 0;
+  let placed = 0, failed = 0, adopted = 0;
   for (const row of placingRows) {
     // Уже на бирже? (ответ прошлой попытки потерялся) → усыновляем, не дублируем.
     const m = findActive(active, row.side, row.price);
@@ -263,94 +218,36 @@ async function reconcileBot(bot, ctx, deps) {
       log(`  ✓ уровень ${row.level_index}: ордер уже на бирже (id=${m.id}) — усыновлён`);
       continue;
     }
-
-    // УЖАТИЕ ПОД ФАКТ: не ставим больше, чем реально свободно. Если даже минимум биржи
-    // сейчас не обеспечен — НЕ ставим кривой ордер и НЕ роняем бота: оставляем уровень
-    // 'placing' и ждём зачисления/освобождения средств (сетка не «теряет» уровень).
-    const price = Number(row.price);
-    let amount  = Number(row.amount);
-    if (bal) {
-      const canDo = affordableQty(row.side, price, bal, baseDec);
-      if (canDo < amount) {
-        if (canDo >= minQty && canDo * price >= minAmt) {
-          amount = canDo;              // чуть меньше — но обеспечен
-        } else {
-          waiting++;                   // сейчас нельзя обеспечить даже минимум — ждём след. тик
-          continue;
-        }
-      }
-    }
-
     const data = { symbol: SYMBOL, action: row.side, type: 'limit',
-                   price: String(price), amount: String(amount) };
+                   price: String(row.price), amount: String(row.amount) };
     try {
       const res = await citronus.createOrder(data, apiKey, secret);
-      const patch = { exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() };
-      if (amount !== Number(row.amount)) patch.amount = amount;   // ужали — сохраняем фактический объём
-      await sb(() => supabase.from('bot_orders').update(patch).eq('id', row.id),
-        { label: `bot_orders→open ур.${row.level_index}`, log });
-      reserveFunds(row.side, price, amount, bal);                 // резервируем в снимке на этот тик
+      await sb(() => supabase.from('bot_orders')
+        .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
+        .eq('id', row.id), { label: `bot_orders→open ур.${row.level_index}`, log });
       placed++;
-      if (amount !== Number(row.amount))
-        log(`  ✓ ${row.side} ${amount} CITRO @ ${price} (ужат под баланс с ${row.amount}) → id=${res.id}`);
-      else
-        log(`  ✓ ${row.side} ${amount} CITRO @ ${price} → id=${res.id} (${res.status})`);
+      log(`  ✓ ${row.side} ${row.amount} CITRO @ ${row.price} → id=${res.id} (${res.status})`);
     } catch (e) {
-      if (isInsufficientFunds(e)) {
-        waiting++;   // биржа отклонила по средствам — НЕ фатально, ждём зачисления
-        log(`  … ${row.side} ${amount} CITRO @ ${price}: биржа отклонила по средствам — жду зачисления (ур.${row.level_index})`);
-      } else {
-        failed++;
-        log(`  ✗ ${row.side} ${amount} CITRO @ ${price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
-      }
+      failed++;
+      log(`  ✗ ${row.side} ${row.amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
     }
   }
 
-  // Итог. Три исхода:
-  //   • всё выставлено — чистим сообщение;
-  //   • часть ЖДЁТ средств (waiting) — бота НЕ роняем, оставляем 'placing', повтор;
-  //   • есть ГЕНУИННЫЕ сбои (не про средства) — прежняя эскалация до остановки.
-  if (failed === 0 && waiting === 0) {
+  // Итог
+  if (failed === 0) {
     placeFailStreak.delete(bot.id);
-    waitingSince.delete(bot.id);
     log(`▶ "${bot.name}": сетка собрана (выставлено ${placed}${adopted ? `, усыновлено ${adopted}` : ''})`);
     await sb(() => supabase.from('bots')
       .update({ status_message: null, updated_at: new Date().toISOString() })
       .eq('id', bot.id), { label: 'bots очистка сообщения', log }).catch(() => {});
-  } else if (failed === 0) {
-    // Только ожидание средств — не сбой постановки, счётчик неудач сбрасываем.
-    placeFailStreak.delete(bot.id);
-
-    // Копим время НЕПРЕРЫВНОГО ожидания. Любой прогресс (placed>0) обнуляет отсчёт —
-    // средства освобождаются, бот работает. Многие минуты без единой постановки — это
-    // уже не задержка расчётов, а реальная нехватка средств → показываем ошибку, чтобы
-    // сломанный бот не притворялся «Активным».
-    if (placed > 0) waitingSince.delete(bot.id);
-    else if (!waitingSince.has(bot.id)) waitingSince.set(bot.id, Date.now());
-    const stuckMs = waitingSince.has(bot.id) ? Date.now() - waitingSince.get(bot.id) : 0;
-
-    if (stuckMs >= WAIT_MAX_MS) {
-      waitingSince.delete(bot.id);
-      const msg = `Не удаётся обеспечить средствами ${waiting} ордеров сетки уже несколько минут. Проверьте баланс на бирже и запустите бота заново.`;
-      log(`✗ "${bot.name}": ${msg}`);
-      await sb(() => supabase.from('bots')
-        .update({ status: 'inactive', status_message: msg, updated_at: new Date().toISOString() })
-        .eq('id', bot.id), { label: 'bots→inactive (долгое ожидание средств)', log }).catch(() => {});
-    } else {
-      log(`▶ "${bot.name}": выставлено ${placed}, ждут средств ${waiting} — оставляю 'placing', повтор на след. тике`);
-      await sb(() => supabase.from('bots')
-        .update({ status_message: `Ожидаю зачисления средств для ${waiting} уровней…`, updated_at: new Date().toISOString() })
-        .eq('id', bot.id), { label: 'bots статус (ожидание средств)', log }).catch(() => {});
-    }
   } else {
-    // Считаем подряд идущие ГЕНУИННЫЕ неудачи; после PLACE_FAIL_MAX останавливаем бота
+    // Считаем подряд идущие неудачи; после PLACE_FAIL_MAX останавливаем бота
     // с ошибкой, а не ретраим вечно молча (его ордера снимет handleCancellations).
-    waitingSince.delete(bot.id);
     const streak = (placeFailStreak.get(bot.id) || 0) + 1;
     placeFailStreak.set(bot.id, streak);
     if (streak >= PLACE_FAIL_MAX) {
       placeFailStreak.delete(bot.id);
-      const msg = `Не удалось выставить ${failed} ордеров сетки за ${streak} попыток. Проверьте параметры бота и лимит ордеров, затем запустите заново.`;
+      const msg = `Не удалось выставить ${failed} ордеров сетки за ${streak} попыток. Проверьте баланс, лимит ордеров и параметры бота, затем запустите заново.`;
       log(`✗ "${bot.name}": ${msg}`);
       await sb(() => supabase.from('bots')
         .update({ status: 'inactive', status_message: msg, updated_at: new Date().toISOString() })
@@ -424,17 +321,6 @@ async function handleFills(bot, botRows, ctx, deps) {
 
   // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
-
-  // ЗАЩИТА ОТ НЕДОСТОВЕРНОГО active_orders: если биржа вернула ПУСТОЙ список активных
-  // ордеров, а у нас есть выставленные — это почти наверняка сбойный/неготовый ответ
-  // (вся сетка не может исчезнуть разом). НЕ трактуем это как массовое исполнение —
-  // пропускаем реакцию до достоверного списка. (Был инцидент: пустой ответ биржи ~3 мин
-  // → фантомные «исполнения» всей сетки + фантомные встречные ордера.)
-  if (openRows.length > 0 && activeOrders.length === 0) {
-    log(`  ! "${bot.name}": active_orders пуст при ${openRows.length} наших открытых ордерах — ответ недостоверен, исполнения пропускаю`);
-    return;
-  }
-
   // …номера которых больше НЕТ среди живых ордеров биржи → исполнены. Сопоставляем
   // СТРОГО по номеру (id), приводя к строке с обеих сторон: у нас он хранится
   // текстом, а биржа может отдать числом. По цене больше НЕ проверяем — иначе чужой
@@ -479,17 +365,6 @@ async function handleFills(bot, botRows, ctx, deps) {
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
     const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
-    const executed = dealsAmt != null && dealsAmt > 1e-9;             // история подтверждает исполнение
-
-    // НЕТ ПОДТВЕРЖДЕНИЯ: ордер пропал из active_orders, но история НЕ подтверждает ни
-    // исполнение (deals_amount>0), ни отмену. Почти наверняка ордер ещё ЖИВ (только что
-    // выставлен и не попал в active_orders, либо история отстала). НЕ фабрикуем сделку:
-    // оставляем строку 'open', уровень занятым — перепроверим на следующем тике.
-    if (!isCancel && !executed) {
-      occupied.add(f.level_index);
-      log(`  · ${f.side} @ ${f.price} (ур.${f.level_index}) исчез из active_orders, но исполнение не подтверждено историей — считаю живым, перепроверю`);
-      continue;
-    }
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
