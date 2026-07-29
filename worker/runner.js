@@ -50,6 +50,13 @@ const FIT_SAFETY = 0.999;
 const PLACE_FAIL_MAX = 20;              // ~40 c при тике 2 c
 const placeFailStreak = new Map();      // bot.id → тиков подряд с непоставленными ордерами
 
+// Как долго терпим «ожидание средств» (waiting), прежде чем счесть бота реально
+// застрявшим и показать ошибку. Обычная задержка зачисления — секунды; многие минуты
+// подряд без единой постановки = не транзиент, а реальная нехватка средств. Молча
+// держать такой бот «живым навсегда» нельзя — иначе поломка прячется от пользователя.
+const WAIT_MAX_MS  = 5 * 60 * 1000;     // 5 минут
+const waitingSince = new Map();         // bot.id → время начала непрерывного ожидания средств
+
 // Ищет среди активных ордеров биржи ордер той же стороны и цены.
 function findActive(active, side, price) {
   return (active || []).find((o) => o.side === side && priceEq(o.price, price)) || null;
@@ -234,7 +241,7 @@ async function reconcileBot(bot, ctx, deps) {
 
   // РАЗМЕЩЕНИЕ/ДОСТРОЙКА: ставим все строки в статусе 'placing'
   const placingRows = rows.filter((r) => r.status === 'placing');
-  if (placingRows.length === 0) { placeFailStreak.delete(bot.id); return 0; } // всё выставлено
+  if (placingRows.length === 0) { placeFailStreak.delete(bot.id); waitingSince.delete(bot.id); return 0; } // всё выставлено
 
   // Параметры для «ужатия под факт». bal берём ТОЛЬКО для достройки: в свежем цикле
   // снимок баланса устарел (обмен произошёл уже внутри этого вызова, а снимок — до него).
@@ -305,21 +312,40 @@ async function reconcileBot(bot, ctx, deps) {
   //   • есть ГЕНУИННЫЕ сбои (не про средства) — прежняя эскалация до остановки.
   if (failed === 0 && waiting === 0) {
     placeFailStreak.delete(bot.id);
+    waitingSince.delete(bot.id);
     log(`▶ "${bot.name}": сетка собрана (выставлено ${placed}${adopted ? `, усыновлено ${adopted}` : ''})`);
     await sb(() => supabase.from('bots')
       .update({ status_message: null, updated_at: new Date().toISOString() })
       .eq('id', bot.id), { label: 'bots очистка сообщения', log }).catch(() => {});
   } else if (failed === 0) {
-    // Только ожидание средств — не сбой постановки. Счётчик неудач сбрасываем, бот живёт.
-    // Уровень остаётся 'placing' и встанет на следующем тике (когда средства зачислятся).
+    // Только ожидание средств — не сбой постановки, счётчик неудач сбрасываем.
     placeFailStreak.delete(bot.id);
-    log(`▶ "${bot.name}": выставлено ${placed}, ждут средств ${waiting} — оставляю 'placing', повтор на след. тике`);
-    await sb(() => supabase.from('bots')
-      .update({ status_message: `Ожидаю зачисления средств для ${waiting} уровней…`, updated_at: new Date().toISOString() })
-      .eq('id', bot.id), { label: 'bots статус (ожидание средств)', log }).catch(() => {});
+
+    // Копим время НЕПРЕРЫВНОГО ожидания. Любой прогресс (placed>0) обнуляет отсчёт —
+    // средства освобождаются, бот работает. Многие минуты без единой постановки — это
+    // уже не задержка расчётов, а реальная нехватка средств → показываем ошибку, чтобы
+    // сломанный бот не притворялся «Активным».
+    if (placed > 0) waitingSince.delete(bot.id);
+    else if (!waitingSince.has(bot.id)) waitingSince.set(bot.id, Date.now());
+    const stuckMs = waitingSince.has(bot.id) ? Date.now() - waitingSince.get(bot.id) : 0;
+
+    if (stuckMs >= WAIT_MAX_MS) {
+      waitingSince.delete(bot.id);
+      const msg = `Не удаётся обеспечить средствами ${waiting} ордеров сетки уже несколько минут. Проверьте баланс на бирже и запустите бота заново.`;
+      log(`✗ "${bot.name}": ${msg}`);
+      await sb(() => supabase.from('bots')
+        .update({ status: 'inactive', status_message: msg, updated_at: new Date().toISOString() })
+        .eq('id', bot.id), { label: 'bots→inactive (долгое ожидание средств)', log }).catch(() => {});
+    } else {
+      log(`▶ "${bot.name}": выставлено ${placed}, ждут средств ${waiting} — оставляю 'placing', повтор на след. тике`);
+      await sb(() => supabase.from('bots')
+        .update({ status_message: `Ожидаю зачисления средств для ${waiting} уровней…`, updated_at: new Date().toISOString() })
+        .eq('id', bot.id), { label: 'bots статус (ожидание средств)', log }).catch(() => {});
+    }
   } else {
     // Считаем подряд идущие ГЕНУИННЫЕ неудачи; после PLACE_FAIL_MAX останавливаем бота
     // с ошибкой, а не ретраим вечно молча (его ордера снимет handleCancellations).
+    waitingSince.delete(bot.id);
     const streak = (placeFailStreak.get(bot.id) || 0) + 1;
     placeFailStreak.set(bot.id, streak);
     if (streak >= PLACE_FAIL_MAX) {
@@ -398,6 +424,17 @@ async function handleFills(bot, botRows, ctx, deps) {
 
   // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
+
+  // ЗАЩИТА ОТ НЕДОСТОВЕРНОГО active_orders: если биржа вернула ПУСТОЙ список активных
+  // ордеров, а у нас есть выставленные — это почти наверняка сбойный/неготовый ответ
+  // (вся сетка не может исчезнуть разом). НЕ трактуем это как массовое исполнение —
+  // пропускаем реакцию до достоверного списка. (Был инцидент: пустой ответ биржи ~3 мин
+  // → фантомные «исполнения» всей сетки + фантомные встречные ордера.)
+  if (openRows.length > 0 && activeOrders.length === 0) {
+    log(`  ! "${bot.name}": active_orders пуст при ${openRows.length} наших открытых ордерах — ответ недостоверен, исполнения пропускаю`);
+    return;
+  }
+
   // …номера которых больше НЕТ среди живых ордеров биржи → исполнены. Сопоставляем
   // СТРОГО по номеру (id), приводя к строке с обеих сторон: у нас он хранится
   // текстом, а биржа может отдать числом. По цене больше НЕ проверяем — иначе чужой
@@ -442,6 +479,17 @@ async function handleFills(bot, botRows, ctx, deps) {
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
     const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
+    const executed = dealsAmt != null && dealsAmt > 1e-9;             // история подтверждает исполнение
+
+    // НЕТ ПОДТВЕРЖДЕНИЯ: ордер пропал из active_orders, но история НЕ подтверждает ни
+    // исполнение (deals_amount>0), ни отмену. Почти наверняка ордер ещё ЖИВ (только что
+    // выставлен и не попал в active_orders, либо история отстала). НЕ фабрикуем сделку:
+    // оставляем строку 'open', уровень занятым — перепроверим на следующем тике.
+    if (!isCancel && !executed) {
+      occupied.add(f.level_index);
+      log(`  · ${f.side} @ ${f.price} (ур.${f.level_index}) исчез из active_orders, но исполнение не подтверждено историей — считаю живым, перепроверю`);
+      continue;
+    }
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
