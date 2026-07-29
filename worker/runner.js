@@ -321,6 +321,17 @@ async function handleFills(bot, botRows, ctx, deps) {
 
   // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
+
+  // ЗАЩИТА ОТ НЕДОСТОВЕРНОГО active_orders: если биржа вернула ПУСТОЙ список активных
+  // ордеров, а у нас есть выставленные — это почти наверняка сбойный/неготовый ответ
+  // (вся сетка не может исчезнуть разом). НЕ трактуем это как массовое исполнение —
+  // пропускаем реакцию до достоверного списка. (Citronus beta минутами отдаёт пустой
+  // active_orders → иначе рождаются фантомные «исполнения» и петля встречных ордеров.)
+  if (openRows.length > 0 && activeOrders.length === 0) {
+    log(`  ! "${bot.name}": active_orders пуст при ${openRows.length} наших открытых ордерах — ответ недостоверен, исполнения пропускаю`);
+    return;
+  }
+
   // …номера которых больше НЕТ среди живых ордеров биржи → исполнены. Сопоставляем
   // СТРОГО по номеру (id), приводя к строке с обеих сторон: у нас он хранится
   // текстом, а биржа может отдать числом. По цене больше НЕ проверяем — иначе чужой
@@ -365,6 +376,17 @@ async function handleFills(bot, botRows, ctx, deps) {
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
     const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
+    const executed = dealsAmt != null && dealsAmt > 1e-9;             // история подтверждает исполнение
+
+    // НЕТ ПОДТВЕРЖДЕНИЯ: ордер пропал из active_orders, но история НЕ подтверждает ни
+    // исполнение (deals_amount>0), ни отмену. Почти наверняка ордер ещё ЖИВ (только что
+    // выставлен и не попал в active_orders, либо история отстала). НЕ фабрикуем сделку:
+    // оставляем строку 'open', уровень занятым — перепроверим на следующем тике.
+    if (!isCancel && !executed) {
+      occupied.add(f.level_index);
+      log(`  · ${f.side} @ ${f.price} (ур.${f.level_index}) исчез из active_orders, но исполнение не подтверждено историей — считаю живым, перепроверю`);
+      continue;
+    }
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
