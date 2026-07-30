@@ -322,12 +322,11 @@ async function handleFills(bot, botRows, ctx, deps) {
   // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
 
-  // [diag/safety] Пока идёт наблюдение (Шаг 0) на откаченном коде — минимальная защита:
-  // если active_orders вернулся ПУСТЫМ, а у нас есть выставленные ордера, это недостоверный
-  // ответ (вся сетка не исчезает разом). НЕ реагируем — иначе рождаются фантомные исполнения
-  // и петля. Полную защиту (история-арбитр) сделаем в Шаге 1; это временный предохранитель.
+  // ЗАЩИТА 1 (дешёвая). Если active_orders вернулся ПУСТЫМ, а у нас есть выставленные —
+  // ответ недостоверен (вся сетка не исчезает разом). НЕ реагируем и не тратим запрос к
+  // истории. Реальные исполнения при этом просто чуть подождут достоверного списка.
   if (openRows.length > 0 && activeOrders.length === 0) {
-    log(`  ! "${bot.name}": active_orders пуст при ${openRows.length} открытых — пропускаю реакцию (наблюдение)`);
+    log(`  ! "${bot.name}": active_orders пуст при ${openRows.length} открытых — ответ недостоверен, пропускаю`);
     return;
   }
 
@@ -375,6 +374,19 @@ async function handleFills(bot, botRows, ctx, deps) {
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
     const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
+    const executed = dealsAmt != null && dealsAmt > 1e-9;            // история подтверждает исполнение
+
+    // ЗАЩИТА 2 — ИСТОРИЯ-АРБИТР (ядро Слоя 2). Ордер пропал из active_orders, но история НЕ
+    // подтверждает ни исполнение (deals_amount>0), ни отмену → почти наверняка ордер ЖИВ,
+    // просто ещё не попал в active_orders (у Citronus этот список отстаёт, а история свежая).
+    // НЕ фабрикуем сделку: оставляем 'open', уровень занятым, перепроверим на след. тике.
+    // Именно это разрывает петлю фантомов (встречный ещё не в active_orders → «исполнен» →
+    // новый встречный → …): без подтверждения историей исполнение не засчитывается.
+    if (!isCancel && !executed) {
+      occupied.add(f.level_index);
+      log(`  · ${f.side} @ ${f.price} (ур.${f.level_index}) исчез из active_orders, но исполнение не подтверждено историей — считаю живым`);
+      continue;
+    }
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
