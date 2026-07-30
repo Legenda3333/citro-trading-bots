@@ -120,6 +120,20 @@ async function loadActiveOrders(apiKey, secret) {
       log(`[diag] сравнение no-symbol не удалось: ${e && e.message}`);
     }
   }
+  // [diag] Свежа ли orders_history тем же ключом? Пишем новейший «терминальный» ордер
+  // (id/статус/дата) — видно, как быстро история отражает снятия/исполнения по сравнению
+  // с active_orders. Так узнаем: тормозит только active_orders или история тоже.
+  try {
+    const hraw  = await citronus.getOrdersHistory(apiKey, secret, { symbol: 'CITRO/USDT', page: 1, pageSize: 5 });
+    const hlist = Array.isArray(hraw) ? hraw
+      : (hraw && Array.isArray(hraw.items)  ? hraw.items
+      : (hraw && Array.isArray(hraw.orders) ? hraw.orders
+      : (hraw && Array.isArray(hraw.list)   ? hraw.list : [])));
+    const h0 = hlist[0];
+    if (h0) log(`[diag] orders_history: всего=${hlist.length}, новейший id=${h0.id != null ? h0.id : h0.order_id} статус=${h0.status} создан=${h0.create_date}`);
+    else    log(`[diag] orders_history: пусто`);
+  } catch (e) { log(`[diag] orders_history проба не удалась: ${e && e.message}`); }
+
   return parsed;
   // ── КОНЕЦ ДИАГНОСТИКИ ─────────────────────────────────────────────────────────
 }
