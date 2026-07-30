@@ -95,7 +95,33 @@ async function loadKey(keyId) {
 // БРОСАЕТ при сбое — вызывающий решает, что делать (важно: НЕЛЬЗЯ молча вернуть
 // [], иначе stopBot решит, что ордеров нет, и пометит живые «отменёнными»).
 async function loadActiveOrders(apiKey, secret) {
-  return citronus.parseActiveOrders(await citronus.getActiveOrders(apiKey, secret), log);
+  // ── ВРЕМЕННАЯ ДИАГНОСТИКА (Шаг 0) ─────────────────────────────────────────────
+  // Изучаем паттерн ответов active_orders у Citronus: как часто приходит пусто и
+  // что именно приходит. Все строки помечены [diag] — легко отфильтровать и убрать.
+  const t0  = Date.now();
+  const raw = await citronus.getActiveOrders(apiKey, secret);         // символьный (CITRO/USDT)
+  const parsed = citronus.parseActiveOrders(raw, log);
+  const ms  = Date.now() - t0;
+  const rawLen = Array.isArray(raw) ? raw.length
+    : (raw && Array.isArray(raw.orders) ? raw.orders.length
+    : (raw && Array.isArray(raw.list)   ? raw.list.length
+    : (raw == null ? 'null' : 'obj')));
+  log(`[diag] active_orders(symbol): сырых=${rawLen} разобрано=${parsed.length} за ${ms}мс`);
+
+  // Пусто у символьного? Тут же сравним с запросом БЕЗ символа (все пары, тот же ключ) —
+  // это покажет, символьный вызов отдаёт пусто или биржа вообще ничего не отдаёт воркеру.
+  // Плюс печатаем сырой ответ символьного, чтобы отличить настоящий [] от иного формата.
+  if (parsed.length === 0) {
+    try {
+      const rawAll    = await citronus.getActiveOrders(apiKey, secret, null);
+      const parsedAll = citronus.parseActiveOrders(rawAll, log);
+      log(`[diag] ПУСТО(symbol): no-symbol разобрано=${parsedAll.length}; сырой(symbol)=${JSON.stringify(raw).slice(0, 200)}`);
+    } catch (e) {
+      log(`[diag] сравнение no-symbol не удалось: ${e && e.message}`);
+    }
+  }
+  return parsed;
+  // ── КОНЕЦ ДИАГНОСТИКИ ─────────────────────────────────────────────────────────
 }
 
 // Детекция фатального отказа ключа
