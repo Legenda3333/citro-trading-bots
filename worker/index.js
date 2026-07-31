@@ -95,47 +95,7 @@ async function loadKey(keyId) {
 // БРОСАЕТ при сбое — вызывающий решает, что делать (важно: НЕЛЬЗЯ молча вернуть
 // [], иначе stopBot решит, что ордеров нет, и пометит живые «отменёнными»).
 async function loadActiveOrders(apiKey, secret) {
-  // ── ВРЕМЕННАЯ ДИАГНОСТИКА (Шаг 0) ─────────────────────────────────────────────
-  // Изучаем паттерн ответов active_orders у Citronus: как часто приходит пусто и
-  // что именно приходит. Все строки помечены [diag] — легко отфильтровать и убрать.
-  const t0  = Date.now();
-  const raw = await citronus.getActiveOrders(apiKey, secret);         // символьный (CITRO/USDT)
-  const parsed = citronus.parseActiveOrders(raw, log);
-  const ms  = Date.now() - t0;
-  const rawLen = Array.isArray(raw) ? raw.length
-    : (raw && Array.isArray(raw.orders) ? raw.orders.length
-    : (raw && Array.isArray(raw.list)   ? raw.list.length
-    : (raw == null ? 'null' : 'obj')));
-  log(`[diag] active_orders(symbol): сырых=${rawLen} разобрано=${parsed.length} за ${ms}мс`);
-
-  // Пусто у символьного? Тут же сравним с запросом БЕЗ символа (все пары, тот же ключ) —
-  // это покажет, символьный вызов отдаёт пусто или биржа вообще ничего не отдаёт воркеру.
-  // Плюс печатаем сырой ответ символьного, чтобы отличить настоящий [] от иного формата.
-  if (parsed.length === 0) {
-    try {
-      const rawAll    = await citronus.getActiveOrders(apiKey, secret, null);
-      const parsedAll = citronus.parseActiveOrders(rawAll, log);
-      log(`[diag] ПУСТО(symbol): no-symbol разобрано=${parsedAll.length}; сырой(symbol)=${JSON.stringify(raw).slice(0, 200)}`);
-    } catch (e) {
-      log(`[diag] сравнение no-symbol не удалось: ${e && e.message}`);
-    }
-  }
-  // [diag] Свежа ли orders_history тем же ключом? Пишем новейший «терминальный» ордер
-  // (id/статус/дата) — видно, как быстро история отражает снятия/исполнения по сравнению
-  // с active_orders. Так узнаем: тормозит только active_orders или история тоже.
-  try {
-    const hraw  = await citronus.getOrdersHistory(apiKey, secret, { symbol: 'CITRO/USDT', page: 1, pageSize: 5 });
-    const hlist = Array.isArray(hraw) ? hraw
-      : (hraw && Array.isArray(hraw.items)  ? hraw.items
-      : (hraw && Array.isArray(hraw.orders) ? hraw.orders
-      : (hraw && Array.isArray(hraw.list)   ? hraw.list : [])));
-    const h0 = hlist[0];
-    if (h0) log(`[diag] orders_history: всего=${hlist.length}, новейший id=${h0.id != null ? h0.id : h0.order_id} статус=${h0.status} создан=${h0.create_date}`);
-    else    log(`[diag] orders_history: пусто`);
-  } catch (e) { log(`[diag] orders_history проба не удалась: ${e && e.message}`); }
-
-  return parsed;
-  // ── КОНЕЦ ДИАГНОСТИКИ ─────────────────────────────────────────────────────────
+  return citronus.parseActiveOrders(await citronus.getActiveOrders(apiKey, secret), log);
 }
 
 // Детекция фатального отказа ключа

@@ -547,11 +547,10 @@ async function handleFills(bot, botRows, ctx, deps) {
 
 // Остановка бота: снимаем все его открытые/размещаемые ордера.
 // Обратной конвертации при остановке НЕ делаем. Статус бота уже inactive (из UI).
-// Ордер помечаем 'cancelled' ТОЛЬКО когда его уже нет в active_orders —
-// иначе при сбое отмены мы бы «потеряли» живой ордер на бирже.
+// НА active_orders НЕ полагаемся (у Citronus он отстаёт): снятие подтверждаем по успеху
+// cancel_order, а при неуспехе — по истории. Это убирает и цикл отмены, и «мнимое снятие».
 async function stopBot(bot, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
-  const active = ctx.activeOrders || [];
 
   let rows;
   try {
@@ -591,31 +590,42 @@ async function stopBot(bot, ctx, deps) {
   log(`■ остановка "${bot.name}": ${rows.length} ордеров к снятию`);
   let remaining = 0;
   for (const row of rows) {
-    // Ордер ещё на бирже? Если у строки есть номер — сопоставляем СТРОГО по нему
-    // (как строки), чтобы не задеть чужой ордер на той же цене. Номера нет (ордер
-    // не подтверждён) — тогда по (сторона, цена).
-    const m = row.exchange_order_id
-      ? active.find((o) => String(o.id) === String(row.exchange_order_id))
-      : active.find((o) => o.side === row.side && priceEq(o.price, row.price));
-
-    if (!m) {
-      // На бирже его НЕТ → отмена подтверждена (или ордер исполнился) → cancelled.
+    // Ордер не выставлен на бирже (placing без номера) → на бирже его нет, просто снимаем строку.
+    if (!row.exchange_order_id) {
+      await sb(() => supabase.from('bot_orders')
+        .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+        .eq('id', row.id), { label: 'bot_orders→cancelled (не на бирже)', log }).catch(() => {});
+      log(`  ✓ ${row.side} @ ${row.price}: не был на бирже → снят`);
+      continue;
+    }
+    try {
+      await citronus.cancelOrder(row.exchange_order_id, apiKey, secret);
+      // Отмена принята биржей → ордер снят. Помечаем сразу, НЕ ждём active_orders.
       await sb(() => supabase.from('bot_orders')
         .update({ status: 'cancelled', updated_at: new Date().toISOString() })
         .eq('id', row.id), { label: 'bot_orders→cancelled', log }).catch(() => {});
-      log(`  ✓ ${row.side} @ ${row.price}: снят (подтверждено)`);
-    } else {
-      // Ещё жив → просим отмену. Статус НЕ меняем — подтвердим на следующем тике.
-      remaining++;
+      log(`  ✓ ${row.side} @ ${row.price} (id=${row.exchange_order_id}): отмена принята → снят`);
+    } catch (e) {
+      // Отмена не прошла: ордер уже терминальный (исполнен/снят) ИЛИ временный сбой. Сверяемся
+      // с историей: есть запись → терминальный, снимаем строку; нет → повтор на следующем тике.
+      let terminal = false;
       try {
-        await citronus.cancelOrder(m.id, apiKey, secret);
-        log(`  → запрошена отмена ${row.side} @ ${row.price} (id=${m.id})`);
-      } catch (e) {
-        log(`  ! отмена ${m.id} не прошла: ${e.message} — повтор на следующем тике`);
+        const hm = await citronus.getOrdersHistoryMap(apiKey, secret,
+          { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2 });
+        terminal = hm.has(String(row.exchange_order_id));
+      } catch { /* историю не прочитали — считаем не подтверждённым, повтор */ }
+      if (terminal) {
+        await sb(() => supabase.from('bot_orders')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .eq('id', row.id), { label: 'bot_orders→cancelled (терминальный)', log }).catch(() => {});
+        log(`  ✓ ${row.side} @ ${row.price}: уже терминальный по истории → снят`);
+      } else {
+        remaining++;
+        log(`  ! отмена ${row.exchange_order_id} не прошла (${e.message}) — повтор на следующем тике`);
       }
     }
   }
-  if (remaining > 0) log(`■ "${bot.name}": ещё ${remaining} ордеров снимаются — подтвердим на следующем тике`);
+  if (remaining > 0) log(`■ "${bot.name}": ещё ${remaining} ордеров снимаются — повтор на следующем тике`);
   else               log(`■ остановка "${bot.name}" завершена`);
 }
 
