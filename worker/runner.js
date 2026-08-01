@@ -220,16 +220,30 @@ async function reconcileBot(bot, ctx, deps) {
     }
     const data = { symbol: SYMBOL, action: row.side, type: 'limit',
                    price: String(row.price), amount: String(row.amount) };
+    let res;
     try {
-      const res = await citronus.createOrder(data, apiKey, secret);
+      res = await citronus.createOrder(data, apiKey, secret);
+    } catch (e) {
+      failed++;
+      log(`  ✗ ${row.side} ${row.amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      continue;
+    }
+    // create_order ПРОШЁЛ — ордер на бирже. Пишем его id. Если запись сорвётся — ОТМЕНЯЕМ
+    // выставленный ордер (иначе «сирота» → на след. тике переставим → ДУБЛЬ на уровне). Строка
+    // останется 'placing' → переставится чисто. Так закрываем дубли без биржевой идемпотентности.
+    try {
       await sb(() => supabase.from('bot_orders')
         .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
         .eq('id', row.id), { label: `bot_orders→open ур.${row.level_index}`, log });
       placed++;
       log(`  ✓ ${row.side} ${row.amount} CITRO @ ${row.price} → id=${res.id} (${res.status})`);
-    } catch (e) {
+    } catch (writeErr) {
       failed++;
-      log(`  ✗ ${row.side} ${row.amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      log(`  ! ур.${row.level_index}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
+      if (res && res.id) {
+        try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
+        catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+      }
     }
   }
 
@@ -276,15 +290,26 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = '
     log(`  ✓ ${what} ${side} @ ${price}: уже на бирже (id=${m.id}) — усыновлён`);
     return;
   }
+  let res;
   try {
-    const res = await citronus.createOrder(
+    res = await citronus.createOrder(
       { symbol: SYMBOL, action: side, type: 'limit', price: String(price), amount: String(qty) }, apiKey, secret);
+  } catch (e) {
+    log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    return;
+  }
+  // create_order прошёл. Если запись id сорвётся — отменяем ордер (иначе «сирота» → дубль).
+  try {
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
       .eq('id', row.id), { label: `${what}→open`, log });
     log(`  ✓ ${what} ${side} ${qty} CITRO @ ${price} → id=${res.id} (${res.status})`);
-  } catch (e) {
-    log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+  } catch (writeErr) {
+    log(`  ! ${what} ${side} @ ${price}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
+    if (res && res.id) {
+      try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
+      catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+    }
   }
 }
 
@@ -319,36 +344,31 @@ async function handleFills(bot, botRows, ctx, deps) {
   const q0  = Number.isFinite(Number(bot.base_qty)) ? Number(bot.base_qty) : 0;
   const bal = balance;
 
-  // Кандидаты: наши выставленные (open + есть биржевой id) ордера…
+  // Наши выставленные ордера (open + есть биржевой id).
   const openRows = botRows.filter(r => r.status === 'open' && r.exchange_order_id);
+  if (openRows.length === 0) return;
 
-  // …номера которых больше НЕТ среди живых ордеров биржи → КАНДИДАТЫ (не факт исполнения!).
-  // «Пропал из active_orders» — лишь ОТБОР кандидатов; исполнение подтверждает orders_history
-  // ниже (история-арбитр). Поэтому даже когда active_orders пуст/неполон (у Citronus он
-  // отстаёт) — фантома нет (без истории не засчитываем), а реальные филлы ловятся по свежей
-  // истории, и бот НЕ слепнет. Сопоставляем
-  // СТРОГО по номеру (id), приводя к строке с обеих сторон: у нас он хранится
-  // текстом, а биржа может отдать числом. По цене больше НЕ проверяем — иначе чужой
-  // ордер (другой бот/ручной) на той же цене маскировал бы исполнение.
-  const filled = openRows.filter(r =>
-    !activeOrders.some(o => String(o.id) === String(r.exchange_order_id)));
-  if (filled.length === 0) return;
-
-  // ФАКТ исполнения берём из orders_history (реальные цена/объём/комиссия). История
-  // ПОСТРАНИЧНАЯ (новые сверху): читаем ровно столько страниц, чтобы найти именно
-  // «пропавшие» в этом цикле ордера (filled). Иначе недавняя отмена за пределами
-  // первой страницы потерялась бы, и отменённый ордер можно было бы принять за
-  // исполнение — с ложным встречным ордером. Обычно всё на первой странице.
+  // ДЕТЕКЦИЯ ИСПОЛНЕНИЙ — ПОЛНОСТЬЮ ПО ИСТОРИИ (active_orders для этого больше НЕ используем).
+  // У Citronus orders_history свежая, а active_orders отстаёт — и на ВЫБЫТИИ исполнившегося
+  // ордера задержка бывает до минут. Поэтому берём из истории терминальные (исполнен/отменён)
+  // ордера и сверяем со своими открытыми:
+  //   • реальные филлы ловятся быстро (по свежей истории), без задержки active_orders;
+  //   • фантома нет — нет записи в истории → ордер жив, ничего не засчитываем.
+  // История постраничная (новые сверху); maxPages=2 хватает — терминальные события свежие.
+  // Историю не прочитали → в этот тик не детектим (безопасно; повторим на следующем).
   let histMap = new Map();
   try {
-    const wantedIds = filled.map(f => f.exchange_order_id).filter(Boolean);
-    // maxPages ограничиваем: реальные исполнения/отмены свежие (верх истории). Не нашли —
-    // значит ордер жив (см. история-арбитр). Бережём биржу: при пустом active_orders в
-    // кандидаты попадает вся сетка, и без лимита история листалась бы вхолостую каждый тик.
+    const wantedIds = openRows.map(r => r.exchange_order_id).filter(Boolean);
     histMap = await citronus.getOrdersHistoryMap(apiKey, secret, { symbol: SYMBOL, wantedIds, maxPages: 2 });
   } catch (e) {
-    log(`  ! история ордеров не получена — комиссию оценим по ставке: ${e.message}`);
+    log(`  ! история ордеров не получена — исполнения в этот тик пропускаю: ${e.message}`);
+    return;
   }
+
+  // Кандидаты = наши открытые ордера, которые в истории уже ТЕРМИНАЛЬНЫ (исполнены/отменены).
+  // Сопоставляем по номеру (id) как строки: у нас он текстом, биржа может отдать числом.
+  const filled = openRows.filter(r => histMap.has(String(r.exchange_order_id)));
+  if (filled.length === 0) return;
 
   // Цены уровней — той же функцией grid-core, что и при создании (точное совпадение).
   const grid = GridCore.computeGridLevels(cfg.priceLow, cfg.priceHigh, cfg.gridCount, filled[0].price);
@@ -376,12 +396,9 @@ async function handleFills(bot, botRows, ctx, deps) {
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
     const executed = dealsAmt != null && dealsAmt > 1e-9;            // история подтверждает исполнение
 
-    // ЗАЩИТА 2 — ИСТОРИЯ-АРБИТР (ядро Слоя 2). Ордер пропал из active_orders, но история НЕ
-    // подтверждает ни исполнение (deals_amount>0), ни отмену → почти наверняка ордер ЖИВ,
-    // просто ещё не попал в active_orders (у Citronus этот список отстаёт, а история свежая).
-    // НЕ фабрикуем сделку: оставляем 'open', уровень занятым, перепроверим на след. тике.
-    // Именно это разрывает петлю фантомов (встречный ещё не в active_orders → «исполнен» →
-    // новый встречный → …): без подтверждения историей исполнение не засчитывается.
+    // САНИТИ-ПРОВЕРКА. Кандидаты уже отобраны как терминальные по истории, поэтому сюда
+    // «терминальный, но ни исполнения (deals_amount>0), ни отмены» попадёт лишь при странной
+    // записи истории. Тогда НЕ фабрикуем сделку — считаем ордер живым, перепроверим позже.
     if (!isCancel && !executed) {
       occupied.add(f.level_index);
       heldAlive++;   // по каждому НЕ логируем (засоряет) — сведём в одну строку после цикла
@@ -447,9 +464,9 @@ async function handleFills(bot, botRows, ctx, deps) {
     completions.push({ f, base: accBase, fee: accFee, quote: accQuote, price: accPrice });
   }
 
-  // ОДНА сводная строка вместо спама по каждому уровню: сколько ордеров пропали из
-  // active_orders, но не подтверждены историей (список неполон/отстаёт) — просто ждём.
-  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. без подтверждения историей (active_orders неполон) — жду`);
+  // Редкий случай: запись в истории есть, но она ни «исполнено», ни «отменено» (странный
+  // статус). Такие уровни считаем живыми и ждём. В норме heldAlive=0.
+  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории — считаю живыми`);
 
   if (completions.length === 0) return;
 
@@ -612,19 +629,34 @@ async function stopBot(bot, ctx, deps) {
         .eq('id', row.id), { label: 'bot_orders→cancelled', log }).catch(() => {});
       log(`  ✓ ${row.side} @ ${row.price} (id=${row.exchange_order_id}): отмена принята → снят`);
     } catch (e) {
-      // Отмена не прошла: ордер уже терминальный (исполнен/снят) ИЛИ временный сбой. Сверяемся
-      // с историей: есть запись → терминальный, снимаем строку; нет → повтор на следующем тике.
-      let terminal = false;
+      // Отмена не прошла: ордер уже терминальный (исполнен/снят) ИЛИ временный сбой. Смотрим
+      // историю. Если запись есть — терминальный: и если ИСПОЛНИЛСЯ прямо перед отменой
+      // (deals_amount>0 и не отмена) — фиксируем сделку, чтобы не потерять её в статистике.
+      // Затем снимаем строку. Записи в истории нет → временный сбой → повтор на след. тике.
+      let hc = null;
       try {
         const hm = await citronus.getOrdersHistoryMap(apiKey, secret,
           { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2 });
-        terminal = hm.has(String(row.exchange_order_id));
+        hc = hm.get(String(row.exchange_order_id)) || null;
       } catch { /* историю не прочитали — считаем не подтверждённым, повтор */ }
-      if (terminal) {
+      if (hc) {
+        const filledBase = Number.isFinite(hc.amount) ? hc.amount : 0;
+        const isCancel   = hc.status && /cancel/i.test(hc.status);
+        if (!isCancel && filledBase > 1e-9) {
+          const price = Number.isFinite(hc.price) ? hc.price : Number(row.price);
+          await sb(() => supabase.from('bot_trades').upsert({
+            bot_id: bot.id, exchange_order_id: row.exchange_order_id, side: row.side, kind: 'fill',
+            level_index: row.level_index, price, amount: filledBase, total: price * filledBase,
+            fee: feeUsdt(row.side, hc, price, filledBase, 0),
+            raw: { detected: 'filled_on_stop', level_index: row.level_index }, filled_at: new Date().toISOString()
+          }, { onConflict: 'bot_id,exchange_order_id,kind', ignoreDuplicates: true }),
+            { label: 'сделка при стопе', log, attempts: 2 }).catch(() => {});
+          log(`  ● ${row.side} @ ${row.price}: исполнился перед отменой — сделка записана`);
+        }
         await sb(() => supabase.from('bot_orders')
           .update({ status: 'cancelled', updated_at: new Date().toISOString() })
           .eq('id', row.id), { label: 'bot_orders→cancelled (терминальный)', log }).catch(() => {});
-        log(`  ✓ ${row.side} @ ${row.price}: уже терминальный по истории → снят`);
+        log(`  ✓ ${row.side} @ ${row.price}: терминальный по истории → снят`);
       } else {
         remaining++;
         log(`  ! отмена ${row.exchange_order_id} не прошла (${e.message}) — повтор на следующем тике`);
