@@ -368,6 +368,7 @@ async function handleFills(bot, botRows, ctx, deps) {
   //      объём/комиссию (с учётом ранее накопленного) и встречный на суммарный объём.
   //      Случаи C собираем в completions и применяем АТОМАРНО (apply_fills).
   const completions = [];   // {f, base, fee, quote, price} — завершённые уровни
+  let heldAlive  = 0;       // сколько «пропавших» ордеров признано живыми (нет подтверждения историей)
   for (const f of filled) {
     const hc       = histMap.get(String(f.exchange_order_id)) || {};
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
@@ -383,7 +384,7 @@ async function handleFills(bot, botRows, ctx, deps) {
     // новый встречный → …): без подтверждения историей исполнение не засчитывается.
     if (!isCancel && !executed) {
       occupied.add(f.level_index);
-      log(`  · ${f.side} @ ${f.price} (ур.${f.level_index}) исчез из active_orders, но исполнение не подтверждено историей — считаю живым`);
+      heldAlive++;   // по каждому НЕ логируем (засоряет) — сведём в одну строку после цикла
       continue;
     }
 
@@ -445,6 +446,11 @@ async function handleFills(bot, botRows, ctx, deps) {
     else      log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})`);
     completions.push({ f, base: accBase, fee: accFee, quote: accQuote, price: accPrice });
   }
+
+  // ОДНА сводная строка вместо спама по каждому уровню: сколько ордеров пропали из
+  // active_orders, но не подтверждены историей (список неполон/отстаёт) — просто ждём.
+  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. без подтверждения историей (active_orders неполон) — жду`);
+
   if (completions.length === 0) return;
 
   // Готовим АТОМАРНЫЙ батч по ЗАВЕРШЁННЫМ уровням: id к закрытию (sourceIds), встречные
