@@ -91,6 +91,7 @@ async function reconcileBot(bot, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const active = ctx.activeOrders || [];
   let rows = (ctx.botRows || []).slice();
+  const freshCycle = rows.length === 0;   // свежий запуск: снимок баланса устарел (обмен идёт внутри) → без ужатия
 
   // СВЕЖИЙ ЦИКЛ: ни одного открытого/размещаемого ордера
   if (rows.length === 0) {
@@ -206,6 +207,15 @@ async function reconcileBot(bot, ctx, deps) {
   const placingRows = rows.filter((r) => r.status === 'placing');
   if (placingRows.length === 0) { placeFailStreak.delete(bot.id); return 0; } // всё выставлено
 
+  // СТРАХОВКА ПО СРЕДСТВАМ: ужимаем ордер под реально свободный баланс, чтобы биржа не
+  // отклоняла его по нехватке средств → эскалация в стоп. Баланс берём ТОЛЬКО для достройки
+  // (в свежем цикле снимок устарел до обмена). Параметры рынка — из тика.
+  const market  = ctx.market || {};
+  const baseDec = Number.isInteger(market.trade_base_precision) ? market.trade_base_precision : 2;
+  const minQty  = parseFloat(market.min_order_qty) || 1;
+  const minAmt  = parseFloat(market.min_order_amt) || 0.1;
+  const bal     = freshCycle ? null : (ctx.balance || null);
+
   let placed = 0, failed = 0, adopted = 0;
   for (const row of placingRows) {
     // Уже на бирже? (ответ прошлой попытки потерялся) → усыновляем, не дублируем.
@@ -218,25 +228,40 @@ async function reconcileBot(bot, ctx, deps) {
       log(`  ✓ уровень ${row.level_index}: ордер уже на бирже (id=${m.id}) — усыновлён`);
       continue;
     }
+    // Ужатие под факт. Если реально свободного меньше объёма — ужимаем ордер (иначе биржа
+    // отклонит по средствам). НО при очень низком снимке (вероятно задержка зачисления) НЕ
+    // ужимаем — ставим полный и доверяем бирже, иначе «недопродали» бы то, что на бирже есть.
+    let amount = Number(row.amount);
+    if (bal) {
+      const p    = Number(row.price);
+      const free = row.side === 'sell' ? bal.CITRO : (p > 0 ? bal.USDT / p : 0);
+      const cap  = engine.floorTo(Math.max(0, free) * TOPUP_SAFETY, baseDec);
+      if (cap >= minQty && cap * p >= minAmt && cap < amount) amount = cap;   // ужимаем только когда есть смысл
+    }
     const data = { symbol: SYMBOL, action: row.side, type: 'limit',
-                   price: String(row.price), amount: String(row.amount) };
+                   price: String(row.price), amount: String(amount) };
     let res;
     try {
       res = await citronus.createOrder(data, apiKey, secret);
     } catch (e) {
       failed++;
-      log(`  ✗ ${row.side} ${row.amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
       continue;
     }
     // create_order ПРОШЁЛ — ордер на бирже. Пишем его id. Если запись сорвётся — ОТМЕНЯЕМ
     // выставленный ордер (иначе «сирота» → на след. тике переставим → ДУБЛЬ на уровне). Строка
     // останется 'placing' → переставится чисто. Так закрываем дубли без биржевой идемпотентности.
     try {
-      await sb(() => supabase.from('bot_orders')
-        .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
+      const patch = { exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() };
+      if (amount !== Number(row.amount)) patch.amount = amount;   // ужали — сохраняем фактический объём
+      await sb(() => supabase.from('bot_orders').update(patch)
         .eq('id', row.id), { label: `bot_orders→open ур.${row.level_index}`, log });
+      if (bal) { if (row.side === 'sell') bal.CITRO -= amount; else bal.USDT -= amount * Number(row.price); } // резервируем в снимке
       placed++;
-      log(`  ✓ ${row.side} ${row.amount} CITRO @ ${row.price} → id=${res.id} (${res.status})`);
+      if (amount !== Number(row.amount))
+        log(`  ✓ ${row.side} ${amount} CITRO @ ${row.price} (ужат под баланс с ${row.amount}) → id=${res.id}`);
+      else
+        log(`  ✓ ${row.side} ${amount} CITRO @ ${row.price} → id=${res.id} (${res.status})`);
     } catch (writeErr) {
       failed++;
       log(`  ! ур.${row.level_index}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
