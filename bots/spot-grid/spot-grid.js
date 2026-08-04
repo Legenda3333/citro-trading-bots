@@ -1,5 +1,11 @@
 const API_URL = 'https://api.citronus.com/public/v1/jsonrpc';
 
+// Номер JSON-RPC запроса — У КАЖДОГО СВОЙ. Citronus дедуплицирует по паре (id + тело):
+// тот же id с тем же телом — запрос не выполняется, возвращается сохранённый ответ.
+// С постоянными номерами график, стакан и цена показывали устаревшие данные.
+let _rpcSeq = 0;
+function nextRpcId() { return `${Date.now().toString(36)}-${(++_rpcSeq).toString(36)}`; }
+
 // Общая математика сетки — из grid-core.js (единый источник, тот же код в воркере).
 const { truncate, parseLevel } = GridCore;
 
@@ -315,7 +321,7 @@ async function fetchOrderbook() {
       jsonrpc: '2.0',
       method:  'orderbook',
       params:  { category: 'spot', symbol: 'CITRO/USDT' },
-      id:      '3'
+      id:      nextRpcId()
     })
   });
   const json = await res.json();
@@ -924,7 +930,7 @@ async function fetchTickerData() {
       jsonrpc: '2.0',
       method:  'tickers',
       params:  { category: 'spot', symbol: 'CITRO/USDT' },
-      id:      '2'
+      id:      nextRpcId()
     })
   });
   const json = await res.json();
@@ -993,7 +999,7 @@ async function fetchOHLCV(interval, limit = 10000) {
         interval: interval,
         data:     { limit }
       },
-      id: '1'
+      id: nextRpcId()
     })
   });
 

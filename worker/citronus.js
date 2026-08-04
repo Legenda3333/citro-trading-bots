@@ -15,6 +15,17 @@ const RECV_WINDOW = '5000';
 // воркера (бот молча перестал бы реагировать) — для денег недопустимо.
 const REQUEST_TIMEOUT_MS = 5000;
 
+// Номер JSON-RPC запроса — У КАЖДОГО СВОЙ.
+// Citronus дедуплицирует запросы по паре (id + тело): пришёл тот же id с тем же телом —
+// запрос НЕ выполняется, отдаётся сохранённый ответ. Раньше тут стояла константа '1',
+// и это ломало сразу два места: повтор create_order возвращал старый ответ (в том числе
+// намертво залипший старый ОТКАЗ), а active_orders — устаревший список, потому что
+// запрос списка каждые 2 секунды абсолютно одинаковый. Кэш у каждого ключа свой —
+// отсюда и «зависимость от ключа», которую мы долго не могли объяснить.
+// Проверено экспериментом 04.08.2026: тот же запрос с другим id выполняется честно.
+let _rpcSeq = 0;
+function nextRpcId() { return `${Date.now().toString(36)}-${(++_rpcSeq).toString(36)}`; }
+
 // Ограничитель частоты запросов к бирже — ОТДЕЛЬНАЯ очередь на каждый ключ
 // Лимит биржи — 5 запросов/сек НА КАЖДЫЙ API-ключ (подтверждено документацией).
 // Держим минимум 350 мс между запросами ОДНОГО ключа (≤~2.9/сек — большой запас
@@ -84,7 +95,7 @@ async function signedRequest(method, params, apiKey, secret, opts = {}) {
   const { retries = 1, log } = opts;
   return withRetry(() => {
     const timestamp = Date.now().toString();
-    const body      = JSON.stringify({ jsonrpc: '2.0', method, params, id: '1' });
+    const body      = JSON.stringify({ jsonrpc: '2.0', method, params, id: nextRpcId() });
     const message   = timestamp + apiKey + RECV_WINDOW + body;
     const signature = crypto.createHmac('sha256', secret).update(message).digest('hex');
     return rpcFetch({
@@ -162,7 +173,7 @@ async function cancelOrder(orderId, apiKey, secret) {
 async function publicRequest(method, params, opts = {}) {
   const { retries = 1, log } = opts;
   return withRetry(() => {
-    const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: '1' });
+    const body = JSON.stringify({ jsonrpc: '2.0', method, params, id: nextRpcId() });
     return rpcFetch({ 'Content-Type': 'application/json; charset=utf-8' }, body, 'public');
   }, { attempts: retries, label: method, log, shouldRetry: retryNetworkOnly });
 }

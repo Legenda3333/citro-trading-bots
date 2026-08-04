@@ -17,6 +17,12 @@ const API_URL     = 'https://api.citronus.com/public/v1/jsonrpc';
 const RECV_WINDOW = '5000';
 const REQUEST_TIMEOUT_MS = 6000;
 
+// Номер JSON-RPC запроса — У КАЖДОГО СВОЙ. Citronus дедуплицирует по паре (id + тело):
+// тот же id с тем же телом — запрос не выполняется, возвращается сохранённый ответ.
+// С константой '1' повторный запрос тех же данных отдавал устаревший результат.
+let _rpcSeq = 0;
+function nextRpcId() { return `${Date.now().toString(36)}-${(++_rpcSeq).toString(36)}`; }
+
 const ORDER_LIMIT = 100; // лимит открытых ордеров на аккаунт (Citronus, account-wide)
 const ORDER_LIMIT_MESSAGE =
   'При заданном количестве сеток будет превышен лимит биржи в 100 лимитных ордеров. ' +
@@ -27,7 +33,7 @@ const ORDER_LIMIT_MESSAGE =
 // проверку «непройденной» и разрешает запуск — страхует воркер).
 async function signedRequest(method, params, apiKey, secret) {
   const timestamp = Date.now().toString();
-  const body      = JSON.stringify({ jsonrpc: '2.0', method, params, id: '1' });
+  const body      = JSON.stringify({ jsonrpc: '2.0', method, params, id: nextRpcId() });
   const message   = timestamp + apiKey + RECV_WINDOW + body;
   const signature = crypto.createHmac('sha256', secret).update(message).digest('hex');
 
@@ -67,7 +73,7 @@ async function fetchLastPrice(symbol = 'CITRO/USDT') {
     method:  'POST',
     headers: { 'Content-Type': 'application/json; charset=utf-8' },
     body: JSON.stringify({ jsonrpc: '2.0', method: 'tickers',
-      params: { category: 'spot', symbol }, id: '1' }),
+      params: { category: 'spot', symbol }, id: nextRpcId() }),
     signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
   });
   if (!res.ok) return null;
