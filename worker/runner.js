@@ -53,6 +53,10 @@ const placeFailStreak = new Map();      // bot.id → тиков подряд с
 const STOP_FAIL_MAX = 60;               // ~2 мин при тике 2 c
 const stopFailStreak = new Map();       // bot.id → тиков подряд с неснятыми ордерами
 
+// Тиков подряд с «неоднозначной записью истории» — чтобы не писать одно и то же
+// каждый тик, пока состояние держится (см. конец handleFills).
+const heldStreak = new Map();           // bot.id → тиков подряд
+
 // Допуск при сравнении объёмов (объёмы округлены до сотых, шум — на уровне 1e-9).
 const AMOUNT_EPS = 1e-9;
 
@@ -187,7 +191,7 @@ async function insertIntentsBatch(supabase, bot, orders, log) {
 // Приведение сетки активного бота к плану. Возвращает число выставленных ордеров.
 async function reconcileBot(bot, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
-  const active = ctx.activeOrders || [];
+  const active = ctx.activeOrders;   // null = список не прочитан (это НЕ «ордеров нет»)
   let rows = (ctx.botRows || []).slice();
   const freshCycle = rows.length === 0;   // свежий запуск: снимок баланса устарел (обмен идёт внутри) → без ужатия
 
@@ -319,6 +323,14 @@ async function reconcileBot(bot, ctx, deps) {
     // Усыновление — ТОЛЬКО если прошлая попытка по этой строке осталась без ответа
     // биржи (ордер мог встать). Во всех остальных случаях в active_orders не лезем.
     if (isUnknown(row.id)) {
+      // Список ордеров биржи сейчас недоступен — проверить, встал ли тот ордер, нечем.
+      // Выставлять вслепую нельзя (на уровне окажется два ордера), поэтому ждём. Если
+      // так и не прояснится, бота остановит общий счётчик неудач PLACE_FAIL_MAX.
+      if (active == null) {
+        failed++;
+        log(`  ? ур.${row.level_index}: прошлая попытка осталась без ответа, а список ордеров биржи недоступен — жду, чтобы не выставить дубль`);
+        continue;
+      }
       const m = await findOrphan(deps, active, row.side, Number(row.price), Number(row.amount));
       if (m) {
         try {
@@ -429,6 +441,12 @@ async function reconcileBot(bot, ctx, deps) {
 async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = 'ордер') {
   const { supabase, citronus, apiKey, secret, log } = deps;
   if (isUnknown(row.id)) {
+    // Список недоступен — проверить нечем, вслепую не выставляем (см. reconcileBot).
+    // Строка остаётся 'placing', её доставит reconcileBot, когда список появится.
+    if (activeOrders == null) {
+      log(`  ? ${what} ${side} @ ${price}: прошлая попытка без ответа, список ордеров биржи недоступен — жду`);
+      return;
+    }
     const m = await findOrphan(deps, activeOrders, side, Number(price), Number(qty));
     if (m) {
       try {
@@ -496,7 +514,7 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = '
 // строкам); ошибка постановки оставляет строку 'placing' — её доставит reconcileBot.
 async function handleFills(bot, botRows, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
-  const { activeOrders = [], baseDec = 2, priceDec = 5, minQty = 1, minAmt = 0.1,
+  const { activeOrders = null, baseDec = 2, priceDec = 5, minQty = 1, minAmt = 0.1,
           commissionBuy = 0, commissionSell = 0, balance = null } = ctx;
   const cfg = bot.config || {};
 
@@ -653,7 +671,16 @@ async function handleFills(bot, botRows, ctx, deps) {
 
   // Редкий случай: запись в истории есть, но она ни «исполнено», ни «отменено» (странный
   // статус). Такие уровни считаем живыми и ждём. В норме heldAlive=0.
-  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории (статус: ${[...heldStatuses].join(', ')}) — считаю живыми`);
+  if (heldAlive > 0) {
+    // Состояние может держаться долго (например ордер частично исполнен и стоит) —
+    // пишем первую строку и далее каждую 20-ю, чтобы не забивать журнал.
+    const n = (heldStreak.get(bot.id) || 0) + 1;
+    heldStreak.set(bot.id, n);
+    if (n === 1 || n % 20 === 0)
+      log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории (статус: ${[...heldStatuses].join(', ')}) — считаю живыми`);
+  } else {
+    heldStreak.delete(bot.id);
+  }
 
   if (completions.length === 0) return;
 
