@@ -195,14 +195,41 @@ async function getOrdersHistory(apiKey, secret, { symbol = 'CITRO/USDT', page = 
   }, apiKey, secret, { retries: 4 });
 }
 
-// Карта id ордера → факт исполнения { price, amount, fee, status } из orders_history.
+// Отметка времени ЗАВЕРШЕНИЯ ордера (мс). Точное имя поля у биржи не зафиксировано,
+// поэтому пробуем правдоподобные варианты и берём первое разумное. create_date сюда
+// НЕ включаем: это момент создания, а не завершения. Нужна только для замера, через
+// сколько завершённый ордер доезжает до orders_history (см. лог задержки в runner.js).
+const HIST_TS_KEYS = ['finish_date', 'finished_at', 'finish_time', 'close_date', 'closed_at',
+                      'last_deal_date', 'deal_date', 'update_date', 'updated_at', 'mtime'];
+function parseHistoryTs(o) {
+  for (const k of HIST_TS_KEYS) {
+    const v = o[k];
+    if (v == null || v === '') continue;
+    const n = Number(v);
+    if (Number.isFinite(n) && n > 0) return n > 1e12 ? n : n * 1000;   // мс или секунды
+    const t = Date.parse(v);
+    if (Number.isFinite(t)) return t;
+  }
+  return null;
+}
+
+// Карта id ордера → факт исполнения { price, amount, fee, status, ts } из orders_history.
 // price = weighted_average_price (VWAP, QUOTE), amount = deals_amount (исполнено, BASE),
-// fee = комиссия в QUOTE (USDT). Поля, которых нет, остаются null.
-function parseOrdersHistory(raw) {
+// fee = комиссия в QUOTE (USDT), ts = когда ордер завершился. Поля, которых нет, — null.
+// При ПЕРВОМ разборе один раз логируем образец записи: так видно, какими словами биржа
+// называет статусы и какие в записи есть отметки времени (форма ответа не зафиксирована).
+let _historyShapeLogged = false;
+function parseOrdersHistory(raw, log) {
   const list = Array.isArray(raw) ? raw
              : (raw && Array.isArray(raw.items)  ? raw.items
              : (raw && Array.isArray(raw.orders) ? raw.orders
              : (raw && Array.isArray(raw.list)   ? raw.list : [])));
+
+  if (log && !_historyShapeLogged && list.length > 0) {
+    _historyShapeLogged = true;
+    log(`orders_history: образец записи: ${JSON.stringify(list[0]).slice(0, 700)}`);
+  }
+
   const map = new Map();
   for (const o of list) {
     const id = o.id != null ? o.id : (o.order_id != null ? o.order_id : o.orderId);
@@ -215,6 +242,7 @@ function parseOrdersHistory(raw) {
       amount: Number.isFinite(deal) ? deal : null,
       fee:    Number.isFinite(fee)  ? fee  : null,
       status: o.status != null ? String(o.status) : null,
+      ts:     parseHistoryTs(o),
     });
   }
   return map;
@@ -233,7 +261,7 @@ const HISTORY_MAX_PAGES = 5;
 // что «пропали» из active_orders в этом цикле) ИЛИ пока не кончится история/лимит
 // страниц. В обычном случае все нужные id лежат на первой странице → один запрос.
 async function getOrdersHistoryMap(apiKey, secret,
-  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100 } = {}) {
+  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100, log = null } = {}) {
   const map  = new Map();
   const want = wantedIds ? new Set([...wantedIds].map(String)) : null;
 
@@ -243,7 +271,7 @@ async function getOrdersHistoryMap(apiKey, secret,
     const raw = await getOrdersHistory(apiKey, secret, { symbol, page, pageSize });
     if (raw && Number.isFinite(+raw.pages)) totalPages = +raw.pages;
 
-    const pageMap = parseOrdersHistory(raw);
+    const pageMap = parseOrdersHistory(raw, log);
     if (pageMap.size === 0) break;    // пустая страница — дальше читать нечего
     for (const [id, v] of pageMap) if (!map.has(id)) map.set(id, v);
 

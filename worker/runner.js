@@ -111,7 +111,7 @@ async function findOrphan(deps, active, side, price, qty) {
   let hist;
   try {
     hist = await citronus.getOrdersHistoryMap(apiKey, secret,
-      { symbol: SYMBOL, wantedIds: free.map((o) => String(o.id)), maxPages: 2 });
+      { symbol: SYMBOL, wantedIds: free.map((o) => String(o.id)), maxPages: 2, log });
   } catch (e) {
     log(`  ! история для проверки сироты не прочитана (${e.message}) — усыновление пропускаю`);
     return null;
@@ -128,6 +128,16 @@ function feeUsdt(side, hist, price, base, rate) {
     return (side === 'buy' && price != null) ? hist.fee * price : hist.fee;
   }
   return (price != null && base != null) ? rate * price * base : 0;
+}
+
+// ЗАМЕР ЗАДЕРЖКИ. Сколько прошло между тем, как ордер завершился на бирже, и тем, как
+// бот это увидел. Складывается из задержки orders_history и нашего цикла (~5-7 c при
+// двух ботах). Отметки времени в записи нет или она бессмысленная — молчим.
+function lagText(hc) {
+  if (!hc || !Number.isFinite(hc.ts)) return '';
+  const sec = Math.round((Date.now() - hc.ts) / 1000);
+  if (sec < 0 || sec > 3600) return '';
+  return `, замечено через ${sec} c`;
 }
 
 // Запись ВСЕХ намерений сетки одним батчем (атомарно). Уникальный индекс
@@ -491,7 +501,7 @@ async function handleFills(bot, botRows, ctx, deps) {
   let histMap = new Map();
   try {
     const wantedIds = openRows.map(r => r.exchange_order_id).filter(Boolean);
-    histMap = await citronus.getOrdersHistoryMap(apiKey, secret, { symbol: SYMBOL, wantedIds, maxPages: 2 });
+    histMap = await citronus.getOrdersHistoryMap(apiKey, secret, { symbol: SYMBOL, wantedIds, maxPages: 2, log });
   } catch (e) {
     log(`  ! история ордеров не получена — исполнения в этот тик пропускаю: ${e.message}`);
     return;
@@ -521,6 +531,7 @@ async function handleFills(bot, botRows, ctx, deps) {
   //      Случаи C собираем в completions и применяем АТОМАРНО (apply_fills).
   const completions = [];   // {f, base, fee, quote, price} — завершённые уровни
   let heldAlive  = 0;       // сколько «пропавших» ордеров признано живыми (нет подтверждения историей)
+  const heldStatuses = new Set();   // какие именно статусы мы не распознали — чтобы было видно в логе
   for (const f of filled) {
     const hc       = histMap.get(String(f.exchange_order_id)) || {};
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
@@ -534,6 +545,7 @@ async function handleFills(bot, botRows, ctx, deps) {
     if (!isCancel && !executed) {
       occupied.add(f.level_index);
       heldAlive++;   // по каждому НЕ логируем (засоряет) — сведём в одну строку после цикла
+      heldStatuses.add(hc.status ? String(hc.status) : 'без статуса');
       continue;
     }
 
@@ -545,7 +557,7 @@ async function handleFills(bot, botRows, ctx, deps) {
         await sb(() => supabase.from('bot_orders')
           .update({ exchange_order_id: res.id || null, updated_at: new Date().toISOString() })
           .eq('id', f.id), { label: `восстановление ур.${f.level_index}`, log }).catch(() => {});
-        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})`);
+        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})${lagText(hc)}`);
       } catch (e) {
         log(`  ! не удалось восстановить ур.${f.level_index}: ${e.message} — повтор на следующем тике`);
       }
@@ -580,7 +592,7 @@ async function handleFills(bot, botRows, ctx, deps) {
                     updated_at: new Date().toISOString() })
           .eq('id', f.id), { label: `частичное: прогресс ур.${f.level_index}`, log });
         await placeRow(deps, bot, { id: f.id }, f.side, levelPrice, remaining, activeOrders, 'остаток');
-        log(`  ◐ частично исполнен ${f.side} (ур.${f.level_index}): +${pieceBase}, остаток снят → переставлен ${remaining} (всего по уровню ${accBase})`);
+        log(`  ◐ частично исполнен ${f.side} (ур.${f.level_index}): +${pieceBase}, остаток снят → переставлен ${remaining} (всего по уровню ${accBase})${lagText(hc)}`);
         occupied.add(f.level_index);
         continue;
       }
@@ -591,14 +603,14 @@ async function handleFills(bot, botRows, ctx, deps) {
     }
 
     // C. Полное исполнение (возможно — доисполнение ранее накопленного уровня).
-    if (prev) log(`  ● доисполнен ${f.side} @ ${f.price} (ур.${f.level_index}): +${pieceBase}, всего ${accBase} — id=${f.exchange_order_id}`);
-    else      log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})`);
+    if (prev) log(`  ● доисполнен ${f.side} @ ${f.price} (ур.${f.level_index}): +${pieceBase}, всего ${accBase} — id=${f.exchange_order_id}${lagText(hc)}`);
+    else      log(`  ● исполнен ${f.side} @ ${f.price} (ур.${f.level_index}, id=${f.exchange_order_id})${lagText(hc)}`);
     completions.push({ f, base: accBase, fee: accFee, quote: accQuote, price: accPrice });
   }
 
   // Редкий случай: запись в истории есть, но она ни «исполнено», ни «отменено» (странный
   // статус). Такие уровни считаем живыми и ждём. В норме heldAlive=0.
-  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории — считаю живыми`);
+  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории (статус: ${[...heldStatuses].join(', ')}) — считаю живыми`);
 
   if (completions.length === 0) return;
 
@@ -788,7 +800,7 @@ async function stopBot(bot, deps) {
       let hc = null;
       try {
         const hm = await citronus.getOrdersHistoryMap(apiKey, secret,
-          { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2 });
+          { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2, log });
         hc = hm.get(String(row.exchange_order_id)) || null;
       } catch { /* историю не прочитали — считаем не подтверждённым, повтор */ }
       if (hc) {
