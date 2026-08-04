@@ -97,6 +97,12 @@ async function reconcileBot(bot, ctx, deps) {
   if (rows.length === 0) {
     log(`▶ запуск бота "${bot.name}" (${bot.id.slice(0, 8)}…)`);
 
+    // Снимок открытых ордеров пары на момент запуска — видно, что биржа отдаёт на
+    // самом деле и насколько это свежо. Именно по этому списку бот решает, не стоит
+    // ли ордер уровня уже на бирже, поэтому в момент сборки сетки он важнее всего.
+    log(`  active_orders (${SYMBOL}) на момент запуска: ${active.length}`);
+    for (const o of active) log(`    · ${o.side} ${o.amount} @ ${o.price} (id=${o.id})`);
+
     const plan = engine.planStart(bot, ctx);
     if (!plan.canPlace) {
       log(`  ОТМЕНА: ${plan.reason}`);
@@ -116,6 +122,7 @@ async function reconcileBot(bot, ctx, deps) {
         : (rawAll && Array.isArray(rawAll.orders) ? rawAll.orders.length
         : (rawAll && Array.isArray(rawAll.list)   ? rawAll.list.length : 0));
       const need = plan.orders.length;
+      log(`  открытых ордеров на аккаунте (все пары): ${accOpen}, ставим ${need}, лимит ${ORDER_LIMIT}`);
       if (accOpen + need > ORDER_LIMIT) {
         log(`  ✗ запуск отменён: на аккаунте ${accOpen} открытых + ${need} новых > ${ORDER_LIMIT}`);
         await sb(() => supabase.from('bots')
