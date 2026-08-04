@@ -245,7 +245,14 @@ async function reconcileBot(bot, ctx, deps) {
       res = await citronus.createOrder(data, apiKey, secret);
     } catch (e) {
       failed++;
+      // ВРЕМЕННАЯ ДИАГНОСТИКА (04.08.2026): биржа отвечает «Internal server error» на
+      // отдельные ордера, хотя тот же ордер из отдельного скрипта проходит. Печатаем
+      // ответ биржи целиком (кроме текста там бывают code и data) и тело, которое реально
+      // ушло. Секретов в теле нет — ключ и подпись живут в заголовках. Убрать после разбора.
+      const err = e.citronus || null;
       log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      log(`    [диаг] http=${e.httpStatus || '—'} код=${(err && err.code) || '—'} данные=${JSON.stringify(err && err.data) || '—'} ответ=${JSON.stringify(err) || '—'}`);
+      log(`    [диаг] отправляли: ${JSON.stringify(data)}`);
       continue;
     }
     // create_order ПРОШЁЛ — ордер на бирже. Пишем его id. Если запись сорвётся — ОТМЕНЯЕМ
