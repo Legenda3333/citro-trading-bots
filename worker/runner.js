@@ -130,6 +130,25 @@ function feeUsdt(side, hist, price, base, rate) {
   return (price != null && base != null) ? rate * price * base : 0;
 }
 
+// ГЛУБИНА ЧТЕНИЯ ИСТОРИИ. Биржа сортирует историю только по дате СОЗДАНИЯ ордера, а не
+// по дате завершения. Поэтому ордер, стоявший с запуска бота и исполнившийся только
+// сейчас, лежит в истории глубоко — за фиксированными двумя страницами его исполнение
+// не заметили бы вовсе. Даём бирже дату создания самого старого нашего открытого ордера
+// (с запасом в час): листать глубже него бессмысленно — там наших ордеров нет.
+// Обычно правило срабатывает на первой странице, то есть запросов становится МЕНЬШЕ;
+// глубже бот полезет только у долгоживущей сетки, и не дальше потолка страниц.
+const HISTORY_PAGES_DEEP = 8;     // потолок ~800 записей, если правило почему-то не сработало
+function historyDepth(rows) {
+  let oldest = null;
+  for (const r of rows) {
+    const t = Date.parse(r.created_at);
+    if (Number.isFinite(t) && (oldest == null || t < oldest)) oldest = t;
+  }
+  // Дат нет (старые строки) — работаем как раньше, по двум страницам.
+  if (oldest == null) return { maxPages: 2 };
+  return { notOlderThan: oldest - 60 * 60 * 1000, maxPages: HISTORY_PAGES_DEEP };
+}
+
 // ЗАМЕР ЗАДЕРЖКИ. Сколько прошло между тем, как ордер завершился на бирже, и тем, как
 // бот это увидел. ВАЖНО: на 04.08.2026 Citronus в orders_history отдаёт только create_date
 // (момент создания), отметки завершения там нет — значит приписка не появляется вообще.
@@ -502,7 +521,8 @@ async function handleFills(bot, botRows, ctx, deps) {
   let histMap = new Map();
   try {
     const wantedIds = openRows.map(r => r.exchange_order_id).filter(Boolean);
-    histMap = await citronus.getOrdersHistoryMap(apiKey, secret, { symbol: SYMBOL, wantedIds, maxPages: 2, log });
+    histMap = await citronus.getOrdersHistoryMap(apiKey, secret,
+      { symbol: SYMBOL, wantedIds, log, ...historyDepth(openRows) });
   } catch (e) {
     log(`  ! история ордеров не получена — исполнения в этот тик пропускаю: ${e.message}`);
     return;
@@ -536,9 +556,16 @@ async function handleFills(bot, botRows, ctx, deps) {
   for (const f of filled) {
     const hc       = histMap.get(String(f.exchange_order_id)) || {};
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
-    const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
-    const executed = dealsAmt != null && dealsAmt > 1e-9;            // история подтверждает исполнение
+    // ЕЩЁ ЖИВЫЕ состояния, которые могут встретиться в записи (по документации биржи):
+    // 'marked_for_cancel' — ордер только помечен на отмену и продолжает торговаться;
+    // 'partially_fulfilled'/'partially_filled' — исполнен частично и по-прежнему стоит.
+    // Проверяем их ПЕРВЫМИ: первое содержит слово «cancel» (иначе восстановили бы уровень
+    // при живом ордере), у второго есть исполненный объём (иначе засчитали бы уровень
+    // завершённым и выставили встречный, пока исходный ордер ещё торгуется).
+    const alive    = hc.status ? /marked_for_cancel|partial/i.test(hc.status) : false;
+    const isCancel = !alive && hc.status && /cancel/i.test(hc.status);
+    const executed = !alive && dealsAmt != null && dealsAmt > 1e-9;   // история подтверждает исполнение
 
     // САНИТИ-ПРОВЕРКА. Кандидаты уже отобраны как терминальные по истории, поэтому сюда
     // «терминальный, но ни исполнения (deals_amount>0), ни отмены» попадёт лишь при странной
@@ -753,7 +780,7 @@ async function stopBot(bot, deps) {
   let rows;
   try {
     rows = await sb(() => supabase.from('bot_orders')
-      .select('id, exchange_order_id, side, price, status, level_index, partial')
+      .select('id, exchange_order_id, side, price, status, level_index, partial, created_at')
       .eq('bot_id', bot.id)
       .in('status', ['open', 'placing']), { label: 'чтение ордеров для отмены', log });
   } catch (e) { log(`✗ stopBot чтение ордеров: ${e.message}`); return; }
@@ -816,9 +843,12 @@ async function stopBot(bot, deps) {
       let hc = null;
       try {
         const hm = await citronus.getOrdersHistoryMap(apiKey, secret,
-          { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2, log });
+          { symbol: SYMBOL, wantedIds: [row.exchange_order_id], log, ...historyDepth([row]) });
         hc = hm.get(String(row.exchange_order_id)) || null;
       } catch { /* историю не прочитали — считаем не подтверждённым, повтор */ }
+      // Запись есть, но состояние ещё ЖИВОЕ (помечен на отмену / частично исполнен и
+      // стоит) — это не подтверждение снятия, повторяем отмену на следующем тике.
+      if (hc && hc.status && /marked_for_cancel|partial/i.test(hc.status)) hc = null;
       if (hc) {
         const filledBase = Number.isFinite(hc.amount) ? hc.amount : 0;
         const isCancel   = hc.status && /cancel/i.test(hc.status);

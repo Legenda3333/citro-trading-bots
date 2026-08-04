@@ -239,14 +239,26 @@ function parseOrdersHistory(raw, log) {
     const deal = parseFloat(o.deals_amount);
     const fee  = parseFloat(o.fee);
     map.set(String(id), {
-      price:  Number.isFinite(wap)  ? wap  : null,
-      amount: Number.isFinite(deal) ? deal : null,
-      fee:    Number.isFinite(fee)  ? fee  : null,
-      status: o.status != null ? String(o.status) : null,
-      ts:     parseHistoryTs(o),
+      price:   Number.isFinite(wap)  ? wap  : null,
+      amount:  Number.isFinite(deal) ? deal : null,
+      fee:     Number.isFinite(fee)  ? fee  : null,
+      status:  o.status != null ? String(o.status) : null,
+      ts:      parseHistoryTs(o),
+      created: parseCreateTs(o),
     });
   }
   return map;
+}
+
+// Дата СОЗДАНИЯ ордера (мс). Она в истории есть всегда (ISO-8601) и по ней же биржа
+// сортирует выдачу — на этом построено правило остановки листания.
+function parseCreateTs(o) {
+  const v = o.create_date != null ? o.create_date : o.created_at;
+  if (v == null || v === '') return null;
+  const n = Number(v);
+  if (Number.isFinite(n) && n > 0) return n > 1e12 ? n : n * 1000;
+  const t = Date.parse(v);
+  return Number.isFinite(t) ? t : null;
 }
 
 // Сколько страниц истории максимум читаем за один вызов (страховка от лишней
@@ -258,11 +270,19 @@ const HISTORY_MAX_PAGES = 5;
 // orders_history отдаётся страницами (page/page_size, новые сверху). Читать только
 // первую страницу опасно: недавно отменённый/исполненный ордер мог уехать за её
 // пределы — и тогда отмену на бирже легко принять за исполнение (см. C-2).
-// Поэтому читаем страницы, пока не найдём ВСЕ нужные ордера (wantedIds — id тех,
-// что «пропали» из active_orders в этом цикле) ИЛИ пока не кончится история/лимит
-// страниц. В обычном случае все нужные id лежат на первой странице → один запрос.
+// Поэтому читаем страницы, пока не найдём ВСЕ нужные ордера (wantedIds — id наших
+// открытых ордеров) ИЛИ пока не кончится история/лимит страниц.
+//
+// ГЛАВНОЕ ПРАВИЛО ОСТАНОВКИ — notOlderThan (мс): дата создания САМОГО СТАРОГО нашего
+// открытого ордера. Биржа умеет сортировать историю ТОЛЬКО по дате создания (по времени
+// завершения сортировки нет), мы берём порядок «от новых к старым». Значит как только
+// вся страница оказалась старше notOlderThan, дальше наших ордеров быть не может —
+// листать бессмысленно. Без этого правила ордер, который стоял с запуска бота и
+// исполнился только сегодня, ушёл бы за фиксированный лимит страниц и его исполнение
+// не заметили бы НИКОГДА. В обычном случае правило срабатывает на первой же странице.
 async function getOrdersHistoryMap(apiKey, secret,
-  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100, log = null } = {}) {
+  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100,
+    notOlderThan = null, log = null } = {}) {
   const map  = new Map();
   const want = wantedIds ? new Set([...wantedIds].map(String)) : null;
 
@@ -281,6 +301,17 @@ async function getOrdersHistoryMap(apiKey, secret,
       let allFound = true;
       for (const id of want) if (!map.has(id)) { allFound = false; break; }
       if (allFound) break;
+    }
+
+    // Вся страница старше наших открытых ордеров → глубже искать нечего.
+    // Записи без разобранной даты не учитываем: не знаем — значит не останавливаемся.
+    if (notOlderThan != null) {
+      let oldestOnPage = null;
+      for (const v of pageMap.values()) {
+        if (v.created == null) continue;
+        if (oldestOnPage == null || v.created < oldestOnPage) oldestOnPage = v.created;
+      }
+      if (oldestOnPage != null && oldestOnPage < notOlderThan) break;
     }
 
     page++;
