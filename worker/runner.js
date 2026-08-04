@@ -5,9 +5,11 @@
 //   • reconcileBot вызывается каждый тик для активного бота и приводит его
 //     сетку к плану: СВЕЖИЙ цикл (нет строк) → обмен + запись намерений;
 //     НЕПОЛНАЯ сетка (есть строки 'placing') → доставляем недостающее.
-//   • Перед каждым размещением сверяемся с active_orders по (сторона, цена):
-//     если ордер уже на бирже — «усыновляем» строку, а не выставляем дубль.
-//     Это делает повтор create_order безопасным.
+//   • Перед каждым размещением сверяемся с active_orders: если НАШ ордер уже на
+//     бирже — «усыновляем» строку, а не выставляем дубль. Это делает повтор
+//     create_order безопасным. «Наш» = совпали сторона и цена И номер не закреплён
+//     ни за одной строкой bot_orders И объём не больше нашего — иначе бот забрал бы
+//     чужой ордер, ведь active_orders отдаётся на ВЕСЬ аккаунт (см. findActive).
 //   • Намерения пишем ОДНИМ батчем (атомарно): либо вся сетка записана, либо
 //     ни одной строки — не бывает «частичных намерений».
 //   • Обмен (market) делаем РОВНО один раз за цикл — только в свежем цикле
@@ -46,9 +48,38 @@ const TOPUP_SAFETY = 0.999;
 const PLACE_FAIL_MAX = 20;              // ~40 c при тике 2 c
 const placeFailStreak = new Map();      // bot.id → тиков подряд с непоставленными ордерами
 
-// Ищет среди активных ордеров биржи ордер той же стороны и цены.
-function findActive(active, side, price) {
-  return (active || []).find((o) => o.side === side && priceEq(o.price, price)) || null;
+// Допуск при сравнении объёмов (объёмы округлены до сотых, шум — на уровне 1e-9).
+const AMOUNT_EPS = 1e-9;
+
+// Ищет среди открытых ордеров биржи НАШ ордер — тот, что мы, возможно, уже выставили
+// этой строкой, но не успели записать. Кроме стороны и цены проверяем ещё два условия,
+// иначе бот присвоит чужой ордер (active_orders отдаётся на ВЕСЬ аккаунт):
+//   • номер не закреплён ни за одной строкой bot_orders — иначе это ордер другого бота;
+//   • объём не больше нашего — наш ордер такого объёма и есть, а частичное исполнение
+//     объём только уменьшает; больший объём означает чужой ордер (например ручной).
+// claimed = null (не смогли прочитать занятые номера) → не усыновляем вовсе.
+function findActive(active, side, price, qty, claimed) {
+  if (!claimed) return null;
+  return (active || []).find((o) =>
+    o.side === side && priceEq(o.price, price) &&
+    !claimed.has(String(o.id)) &&
+    (!Number.isFinite(o.amount) || !Number.isFinite(qty) || o.amount <= qty + AMOUNT_EPS)
+  ) || null;
+}
+
+// Номера ордеров, уже закреплённых за какой-либо строкой — по ВСЕМ ботам, включая
+// останавливающиеся. Такой ордер точно не «наш потерянный», присваивать его нельзя.
+// Не прочитали — возвращаем null: лучше выставить ордер заново, чем забрать чужой.
+async function loadClaimedIds(supabase, log) {
+  try {
+    const rows = await sb(() => supabase.from('bot_orders')
+      .select('exchange_order_id').in('status', ['open', 'placing'])
+      .not('exchange_order_id', 'is', null), { label: 'занятые номера ордеров', log });
+    return new Set((rows || []).map((r) => String(r.exchange_order_id)));
+  } catch (e) {
+    log(`  ! занятые номера ордеров не прочитаны (${e.message}) — усыновление в этот тик пропускаю`);
+    return null;
+  }
 }
 
 // Комиссия ОДНОГО исполнения в USDT. Из orders_history комиссия приходит в
@@ -223,10 +254,13 @@ async function reconcileBot(bot, ctx, deps) {
   const minAmt  = parseFloat(market.min_order_amt) || 0.1;
   const bal     = freshCycle ? null : (ctx.balance || null);
 
+  // Читаем ОДИН раз на всю пачку: чьи ордера уже заняты (см. findActive).
+  const claimed = await loadClaimedIds(supabase, log);
+
   let placed = 0, failed = 0, adopted = 0;
   for (const row of placingRows) {
     // Уже на бирже? (ответ прошлой попытки потерялся) → усыновляем, не дублируем.
-    const m = findActive(active, row.side, row.price);
+    const m = findActive(active, row.side, row.price, Number(row.amount), claimed);
     if (m) {
       await sb(() => supabase.from('bot_orders')
         .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
@@ -316,12 +350,12 @@ async function reconcileBot(bot, ctx, deps) {
 }
 
 // Выставление ордера по уже записанной строке ('placing') → 'open'. Идемпотентно:
-// если ордер с такой (стороной, ценой) уже на бирже — усыновляем. При ошибке
-// create_order строка остаётся 'placing' → её достроит reconcileBot. what — только
-// для лога («встречный» при постановке counter-ордера, «остаток» при дозаполнении).
-async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = 'ордер') {
+// если НАШ ордер с такой (стороной, ценой) уже на бирже — усыновляем (проверки «наш ли
+// он» — в findActive). При ошибке create_order строка остаётся 'placing' → её достроит
+// reconcileBot. what — только для лога («встречный», «остаток»).
+async function placeRow(deps, bot, row, side, price, qty, activeOrders, claimed, what = 'ордер') {
   const { supabase, citronus, apiKey, secret, log } = deps;
-  const m = findActive(activeOrders, side, price);
+  const m = findActive(activeOrders, side, price, qty, claimed);
   if (m) {
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
@@ -409,6 +443,10 @@ async function handleFills(bot, botRows, ctx, deps) {
   const filled = openRows.filter(r => histMap.has(String(r.exchange_order_id)));
   if (filled.length === 0) return;
 
+  // Чьи ордера уже заняты — нужно при постановке встречных и остатков (см. findActive).
+  // Читаем один раз и только когда что-то реально исполнилось.
+  const claimed = await loadClaimedIds(supabase, log);
+
   // Цены уровней — той же функцией grid-core, что и при создании (точное совпадение).
   const grid = GridCore.computeGridLevels(cfg.priceLow, cfg.priceHigh, cfg.gridCount, filled[0].price);
   if (!grid) { log(`  ! "${bot.name}": не удалось пересчитать уровни сетки`); return; }
@@ -486,7 +524,7 @@ async function handleFills(bot, botRows, ctx, deps) {
                     amount: remaining, status: 'placing', exchange_order_id: null,
                     updated_at: new Date().toISOString() })
           .eq('id', f.id), { label: `частичное: прогресс ур.${f.level_index}`, log });
-        await placeRow(deps, bot, { id: f.id }, f.side, levelPrice, remaining, activeOrders, 'остаток');
+        await placeRow(deps, bot, { id: f.id }, f.side, levelPrice, remaining, activeOrders, claimed, 'остаток');
         log(`  ◐ частично исполнен ${f.side} (ур.${f.level_index}): +${pieceBase}, остаток снят → переставлен ${remaining} (всего по уровню ${accBase})`);
         occupied.add(f.level_index);
         continue;
@@ -603,7 +641,7 @@ async function handleFills(bot, botRows, ctx, deps) {
   // Выставляем встречные на бирже по реально созданным строкам (идемпотентно): если
   // ордер уже на бирже — усыновляем; при ошибке строка остаётся 'placing' → reconcileBot.
   for (const c of (placedCounters || [])) {
-    await placeRow(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders, 'встречный');
+    await placeRow(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders, claimed, 'встречный');
   }
 }
 
