@@ -147,13 +147,14 @@ function parseActiveOrders(raw, log) {
 // Создать ордер. data = { symbol, action, type, price?, amount?|total? } —
 // строки/числа по формату биржи. Возвращает result (id, status, ...).
 // ВАЖНО: БЕЗ автоповтора — повтор create_order может создать дубль (риск денег).
-// Безопасный повтор реализован в runner.js: сверка с active_orders + «усыновление».
+// Безопасный повтор решает runner.js: если биржа ОТВЕТИЛА отказом, ордера точно нет
+// и повтор безвреден; если ответа не было — ищем «сироту» (runner.findOrphan).
 async function createOrder(data, apiKey, secret) {
   return signedRequest('create_order', { category: 'spot', data }, apiKey, secret);
 }
 
 // Отменить ордер по его id (order_id — на уровне params, не в data).
-// Без автоповтора; переотмену с подтверждением по active_orders ведёт runner.stopBot.
+// Без автоповтора; повторную отмену с подтверждением ведёт runner.stopBot.
 async function cancelOrder(orderId, apiKey, secret) {
   return signedRequest('cancel_order', { category: 'spot', order_id: orderId }, apiKey, secret);
 }

@@ -92,8 +92,8 @@ async function loadKey(keyId) {
 }
 
 // Активные ордера аккаунта в едином виде [{id,side,price,amount}].
-// БРОСАЕТ при сбое — вызывающий решает, что делать (важно: НЕЛЬЗЯ молча вернуть
-// [], иначе stopBot решит, что ордеров нет, и пометит живые «отменёнными»).
+// БРОСАЕТ при сбое — вызывающий решает, что делать (молча вернуть [] нельзя:
+// пустой список означал бы «ордеров нет», а это может быть просто сбой чтения).
 async function loadActiveOrders(apiKey, secret) {
   return citronus.parseActiveOrders(await citronus.getActiveOrders(apiKey, secret), log);
 }
@@ -290,14 +290,12 @@ async function handleCancellations() {
     const creds = await loadKey(keyId);
     if (!creds) continue;
 
-    // Если активные ордера не прочитать — НЕ запускаем stopBot: иначе он решит,
-    // что ордеров нет, и пометит живые «отменёнными» (а отменить их мы не смогли).
-    let activeOrders;
-    try { activeOrders = await loadActiveOrders(creds.apiKey, creds.secret); }
-    catch (e) { log('active_orders не получены при отмене (пропуск аккаунта):', e.message); continue; }
-
+    // active_orders здесь не нужен: остановка подтверждает снятие ответом на
+    // cancel_order или историей завершённых ордеров. Раньше мы пропускали весь
+    // аккаунт, если этот список не прочитался, — теперь сбой ненадёжного метода
+    // больше не мешает боту остановиться.
     for (const bot of keyBots) {
-      await runner.stopBot(bot, { activeOrders },
+      await runner.stopBot(bot,
         { supabase, citronus, apiKey: creds.apiKey, secret: creds.secret, log });
     }
   }

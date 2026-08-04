@@ -5,15 +5,17 @@
 //   • reconcileBot вызывается каждый тик для активного бота и приводит его
 //     сетку к плану: СВЕЖИЙ цикл (нет строк) → обмен + запись намерений;
 //     НЕПОЛНАЯ сетка (есть строки 'placing') → доставляем недостающее.
-//   • Перед каждым размещением сверяемся с active_orders по (сторона, цена):
-//     если ордер уже на бирже — «усыновляем» строку, а не выставляем дубль.
-//     Это делает повтор create_order безопасным.
+//   • Обычное размещение в active_orders НЕ заглядывает: у Citronus этот список
+//     отстаёт на минуты и отдаётся на ВЕСЬ аккаунт — по нему легко присвоить
+//     чужой или уже мёртвый ордер. Повтор безопасен и без него: если биржа
+//     ОТВЕТИЛА отказом, ордера точно нет. Неопределённость только когда ответа
+//     не было (таймаут/обрыв) — на этот случай есть findOrphan.
 //   • Намерения пишем ОДНИМ батчем (атомарно): либо вся сетка записана, либо
 //     ни одной строки — не бывает «частичных намерений».
 //   • Обмен (market) делаем РОВНО один раз за цикл — только в свежем цикле
 //     (когда у бота ещё нет ни одного открытого/размещаемого ордера).
-//   • Остановка помечает ордер 'cancelled' ТОЛЬКО когда его уже нет в
-//     active_orders (подтверждённая отмена). Живые переотменяем на след. тике.
+//   • Остановка active_orders не использует: снятие подтверждаем ответом на
+//     cancel_order или историей завершённых ордеров.
 //
 //  deps = { supabase, citronus, apiKey, secret, log }
 //  ctx  = { market, ob, price, balance, openOrdersCount, activeOrders, botRows }
@@ -46,9 +48,75 @@ const TOPUP_SAFETY = 0.999;
 const PLACE_FAIL_MAX = 20;              // ~40 c при тике 2 c
 const placeFailStreak = new Map();      // bot.id → тиков подряд с непоставленными ордерами
 
-// Ищет среди активных ордеров биржи ордер той же стороны и цены.
-function findActive(active, side, price) {
-  return (active || []).find((o) => o.side === side && priceEq(o.price, price)) || null;
+// Сколько тиков подряд терпим неподтверждённое снятие при остановке, прежде чем
+// перестать долбить биржу и честно сказать пользователю, что ордера остались.
+const STOP_FAIL_MAX = 60;               // ~2 мин при тике 2 c
+const stopFailStreak = new Map();       // bot.id → тиков подряд с неснятыми ордерами
+
+// Допуск при сравнении объёмов (объёмы округлены до сотых, шум — на уровне 1e-9).
+const AMOUNT_EPS = 1e-9;
+
+// «Ответа не было»: запрос не дошёл или ответ потерялся (таймаут/сеть) — что стало
+// с ордером, мы не знаем. Отличаем от ОТВЕТА-отказа биржи (err.citronus /
+// err.httpStatus): там ордер точно не создан и повторить его безопасно.
+function noAnswer(e) { return !!e && !e.citronus && !e.httpStatus; }
+
+// Строки, по которым create_order остался без ответа: ордер мог всё-таки встать.
+// ТОЛЬКО для них разрешено «усыновление». Метка живёт в памяти воркера ограниченное
+// время; перезапуск её теряет — тогда ордер просто будет выставлен заново.
+const UNKNOWN_TTL_MS   = 10 * 60 * 1000;
+const unknownPlacement = new Map();     // bot_orders.id → когда была попытка без ответа
+function markUnknown(rowId)  { unknownPlacement.set(rowId, Date.now()); }
+function clearUnknown(rowId) { unknownPlacement.delete(rowId); }
+function isUnknown(rowId) {
+  const at = unknownPlacement.get(rowId);
+  if (at == null) return false;
+  if (Date.now() - at > UNKNOWN_TTL_MS) { unknownPlacement.delete(rowId); return false; }
+  return true;
+}
+
+// Поиск «сироты» — ордера, который мы, возможно, уже выставили этой строкой, но не
+// успели записать (ответа на create_order не было). Кандидата берём из active_orders,
+// но доверяем ему только после четырёх проверок, потому что список ненадёжен:
+//   1) совпали сторона и цена;
+//   2) объём не больше нашего (частичное исполнение объём уменьшает, увеличить не может);
+//   3) номер не закреплён ни за одной строкой bot_orders — иначе это ордер другого
+//      бота (active_orders отдаётся на весь аккаунт) или наш же, но другого уровня;
+//   4) номера НЕТ в истории завершённых — значит ордер действительно жив, а не
+//      «покойник», который завис в устаревшем active_orders (иначе усыновили бы
+//      фантом: на следующем тике история отдала бы его как исполнение).
+// Не смогли что-то проверить — НЕ усыновляем: выставить ордер заново безопаснее,
+// чем присвоить чужой или мёртвый.
+async function findOrphan(deps, active, side, price, qty) {
+  const { supabase, citronus, apiKey, secret, log } = deps;
+
+  const cands = (active || []).filter((o) =>
+    o.side === side && priceEq(o.price, price) &&
+    (!Number.isFinite(o.amount) || o.amount <= Number(qty) + AMOUNT_EPS));
+  if (cands.length === 0) return null;
+
+  let claimed;
+  try {
+    const taken = await sb(() => supabase.from('bot_orders')
+      .select('exchange_order_id').in('status', ['open', 'placing'])
+      .not('exchange_order_id', 'is', null), { label: 'занятые номера ордеров', log });
+    claimed = new Set((taken || []).map((r) => String(r.exchange_order_id)));
+  } catch (e) {
+    log(`  ! занятые номера ордеров не прочитаны (${e.message}) — усыновление пропускаю`);
+    return null;
+  }
+  const free = cands.filter((o) => !claimed.has(String(o.id)));
+  if (free.length === 0) return null;
+
+  let hist;
+  try {
+    hist = await citronus.getOrdersHistoryMap(apiKey, secret,
+      { symbol: SYMBOL, wantedIds: free.map((o) => String(o.id)), maxPages: 2 });
+  } catch (e) {
+    log(`  ! история для проверки сироты не прочитана (${e.message}) — усыновление пропускаю`);
+    return null;
+  }
+  return free.find((o) => !hist.has(String(o.id))) || null;
 }
 
 // Комиссия ОДНОГО исполнения в USDT. Из orders_history комиссия приходит в
@@ -218,15 +286,24 @@ async function reconcileBot(bot, ctx, deps) {
 
   let placed = 0, failed = 0, adopted = 0;
   for (const row of placingRows) {
-    // Уже на бирже? (ответ прошлой попытки потерялся) → усыновляем, не дублируем.
-    const m = findActive(active, row.side, row.price);
-    if (m) {
-      await sb(() => supabase.from('bot_orders')
-        .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
-        .eq('id', row.id), { label: `усыновление ур.${row.level_index}`, log }).catch(() => {});
-      adopted++; placed++;
-      log(`  ✓ уровень ${row.level_index}: ордер уже на бирже (id=${m.id}) — усыновлён`);
-      continue;
+    // Усыновление — ТОЛЬКО если прошлая попытка по этой строке осталась без ответа
+    // биржи (ордер мог встать). Во всех остальных случаях в active_orders не лезем.
+    if (isUnknown(row.id)) {
+      const m = await findOrphan(deps, active, row.side, Number(row.price), Number(row.amount));
+      if (m) {
+        try {
+          await sb(() => supabase.from('bot_orders')
+            .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
+            .eq('id', row.id), { label: `усыновление ур.${row.level_index}`, log });
+          clearUnknown(row.id);
+          adopted++; placed++;
+          log(`  ✓ уровень ${row.level_index}: ордер прошлой попытки найден на бирже (id=${m.id}) — усыновлён`);
+        } catch (e) {
+          failed++;
+          log(`  ! усыновление ур.${row.level_index} не записано: ${e.message} — повтор на следующем тике`);
+        }
+        continue;
+      }
     }
     // Ужатие под факт. Если реально свободного меньше объёма — ужимаем ордер (иначе биржа
     // отклонит по средствам). НО при очень низком снимке (вероятно задержка зачисления) НЕ
@@ -245,7 +322,14 @@ async function reconcileBot(bot, ctx, deps) {
       res = await citronus.createOrder(data, apiKey, secret);
     } catch (e) {
       failed++;
-      log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      if (noAnswer(e)) {
+        // Ответа нет — ордер мог всё-таки встать. Метим строку: на следующем тике
+        // сначала поищем «сироту» и только потом будем выставлять заново.
+        markUnknown(row.id);
+        log(`  ? ${row.side} ${amount} CITRO @ ${row.price} — ответа от биржи нет (${e.message}); на следующем тике проверю, не встал ли ордер`);
+      } else {
+        log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      }
       continue;
     }
     // create_order ПРОШЁЛ — ордер на бирже. Пишем его id. Если запись сорвётся — ОТМЕНЯЕМ
@@ -256,6 +340,7 @@ async function reconcileBot(bot, ctx, deps) {
       if (amount !== Number(row.amount)) patch.amount = amount;   // ужали — сохраняем фактический объём
       await sb(() => supabase.from('bot_orders').update(patch)
         .eq('id', row.id), { label: `bot_orders→open ур.${row.level_index}`, log });
+      clearUnknown(row.id);       // выставлено и записано — неопределённости больше нет
       if (bal) { if (row.side === 'sell') bal.CITRO -= amount; else bal.USDT -= amount * Number(row.price); } // резервируем в снимке
       placed++;
       if (amount !== Number(row.amount))
@@ -267,7 +352,12 @@ async function reconcileBot(bot, ctx, deps) {
       log(`  ! ур.${row.level_index}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
       if (res && res.id) {
         try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
-        catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+        catch (cErr) {
+          // Сироту снять не удалось — он мог остаться живым. Метим строку: на
+          // следующем тике findOrphan подберёт именно его вместо нового ордера.
+          markUnknown(row.id);
+          log(`  ! не снял сироту ${res.id}: ${cErr.message} — попробую усыновить его на следующем тике`);
+        }
       }
     }
   }
@@ -301,26 +391,39 @@ async function reconcileBot(bot, ctx, deps) {
   return placed;
 }
 
-// Выставление ордера по уже записанной строке ('placing') → 'open'. Идемпотентно:
-// если ордер с такой (стороной, ценой) уже на бирже — усыновляем. При ошибке
+// Выставление ордера по уже записанной строке ('placing') → 'open'. При ошибке
 // create_order строка остаётся 'placing' → её достроит reconcileBot. what — только
 // для лога («встречный» при постановке counter-ордера, «остаток» при дозаполнении).
+// Усыновление — только для строки, у которой прошлая попытка осталась без ответа
+// биржи (см. findOrphan); в обычном случае active_orders не читаем вовсе.
 async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = 'ордер') {
   const { supabase, citronus, apiKey, secret, log } = deps;
-  const m = findActive(activeOrders, side, price);
-  if (m) {
-    await sb(() => supabase.from('bot_orders')
-      .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
-      .eq('id', row.id), { label: `${what} adopt`, log }).catch(() => {});
-    log(`  ✓ ${what} ${side} @ ${price}: уже на бирже (id=${m.id}) — усыновлён`);
-    return;
+  if (isUnknown(row.id)) {
+    const m = await findOrphan(deps, activeOrders, side, Number(price), Number(qty));
+    if (m) {
+      try {
+        await sb(() => supabase.from('bot_orders')
+          .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
+          .eq('id', row.id), { label: `${what} adopt`, log });
+        clearUnknown(row.id);
+        log(`  ✓ ${what} ${side} @ ${price}: ордер прошлой попытки найден на бирже (id=${m.id}) — усыновлён`);
+      } catch (e) {
+        log(`  ! ${what} ${side} @ ${price}: усыновление не записано (${e.message}) — повтор на следующем тике`);
+      }
+      return;
+    }
   }
   let res;
   try {
     res = await citronus.createOrder(
       { symbol: SYMBOL, action: side, type: 'limit', price: String(price), amount: String(qty) }, apiKey, secret);
   } catch (e) {
-    log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    if (noAnswer(e)) {
+      markUnknown(row.id);
+      log(`  ? ${what} ${side} ${qty} CITRO @ ${price} — ответа от биржи нет (${e.message}); на следующем тике проверю, не встал ли ордер`);
+    } else {
+      log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    }
     return;
   }
   // create_order прошёл. Если запись id сорвётся — отменяем ордер (иначе «сирота» → дубль).
@@ -328,12 +431,16 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, what = '
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
       .eq('id', row.id), { label: `${what}→open`, log });
+    clearUnknown(row.id);
     log(`  ✓ ${what} ${side} ${qty} CITRO @ ${price} → id=${res.id} (${res.status})`);
   } catch (writeErr) {
     log(`  ! ${what} ${side} @ ${price}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
     if (res && res.id) {
       try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
-      catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+      catch (cErr) {
+        markUnknown(row.id);
+        log(`  ! не снял сироту ${res.id}: ${cErr.message} — попробую усыновить его на следующем тике`);
+      }
     }
   }
 }
@@ -586,18 +693,33 @@ async function handleFills(bot, botRows, ctx, deps) {
     return;
   }
 
-  // Выставляем встречные на бирже по реально созданным строкам (идемпотентно): если
-  // ордер уже на бирже — усыновляем; при ошибке строка остаётся 'placing' → reconcileBot.
+  // Выставляем встречные на бирже по реально созданным строкам. При ошибке строка
+  // остаётся 'placing' → её достроит reconcileBot на следующем тике.
   for (const c of (placedCounters || [])) {
     await placeRow(deps, bot, { id: c.id }, c.side, Number(c.price), Number(c.amount), activeOrders, 'встречный');
   }
 }
 
+// Биржа ОТВЕТИЛА, что ордер УЖЕ ОТМЕНЁН — это её собственное утверждение о состоянии
+// ордера, а не сбой связи: снимать больше нечего, повторять бессмысленно. Специально
+// НЕ включаем сюда «уже исполнен» и «не найден»: исполнение надо сначала записать в
+// статистику (это делает ветка с историей — она свежая и подтвердит за секунды), а
+// «не найден» может оказаться подтормаживанием биржи. Формулировка «не может быть
+// отменён» тоже не подходит — это отказ, а не «ордера нет».
+const CANCEL_GONE_RE = /уже\s+(был[аи]?\s+)?отмен|already\s+cancel/i;
+function isCancelGone(e) {
+  if (!e || (!e.citronus && !e.httpStatus)) return false;   // ответа не было → это сбой связи
+  const code = (e.citronus && e.citronus.code) ? String(e.citronus.code) : '';
+  return CANCEL_GONE_RE.test(`${code} ${e.message || ''}`);
+}
+
 // Остановка бота: снимаем все его открытые/размещаемые ордера.
 // Обратной конвертации при остановке НЕ делаем. Статус бота уже inactive (из UI).
 // НА active_orders НЕ полагаемся (у Citronus он отстаёт): снятие подтверждаем по успеху
-// cancel_order, а при неуспехе — по истории. Это убирает и цикл отмены, и «мнимое снятие».
-async function stopBot(bot, ctx, deps) {
+// cancel_order, по ответу биржи «ордера уже нет» или по истории. Это убирает и цикл
+// отмены, и «мнимое снятие». Если снять так и не удалось — не повторяем бесконечно:
+// после STOP_FAIL_MAX тиков закрываем строки и предупреждаем пользователя.
+async function stopBot(bot, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
 
   let rows;
@@ -607,7 +729,12 @@ async function stopBot(bot, ctx, deps) {
       .eq('bot_id', bot.id)
       .in('status', ['open', 'placing']), { label: 'чтение ордеров для отмены', log });
   } catch (e) { log(`✗ stopBot чтение ордеров: ${e.message}`); return; }
-  if (!rows || rows.length === 0) return;
+  if (!rows || rows.length === 0) { stopFailStreak.delete(bot.id); return; }
+
+  // Сколько тиков подряд остановка уже не может завершиться. Пока их мало — пишем
+  // подробный лог; дальше сокращаем, чтобы одинаковые строки не забивали журнал.
+  const prevStreak = stopFailStreak.get(bot.id) || 0;
+  const verbose    = prevStreak < 3;
 
   // Перед снятием фиксируем в статистику УЖЕ исполненную часть уровней, которые
   // дозаполнялись остатком (partial). Иначе этот реально исполненный объём потеряется
@@ -631,11 +758,11 @@ async function stopBot(bot, ctx, deps) {
         filled_at: new Date().toISOString()
       }, { onConflict: 'bot_id,exchange_order_id,kind', ignoreDuplicates: true }),
       { label: `частичное при стопе ур.${row.level_index}`, log, attempts: 2 })
-      .then(() => log(`  ✎ зафиксирована исполненная часть уровня ${row.level_index}: ${base} CITRO`))
+      .then(() => { if (verbose) log(`  ✎ зафиксирована исполненная часть уровня ${row.level_index}: ${base} CITRO`); })
       .catch((e) => log(`  ! частичное при стопе ур.${row.level_index} не записано: ${e.message}`));
   }
 
-  log(`■ остановка "${bot.name}": ${rows.length} ордеров к снятию`);
+  if (verbose) log(`■ остановка "${bot.name}": ${rows.length} ордеров к снятию`);
   let remaining = 0;
   for (const row of rows) {
     // Ордер не выставлен на бирже (placing без номера) → на бирже его нет, просто снимаем строку.
@@ -682,14 +809,46 @@ async function stopBot(bot, ctx, deps) {
           .update({ status: 'cancelled', updated_at: new Date().toISOString() })
           .eq('id', row.id), { label: 'bot_orders→cancelled (терминальный)', log }).catch(() => {});
         log(`  ✓ ${row.side} @ ${row.price}: терминальный по истории → снят`);
+      } else if (isCancelGone(e)) {
+        // История не подтвердила, но биржа прямо сказала, что ордер уже отменён
+        // (так бывает, например, если его снял кто-то ещё). Верим ответу биржи.
+        await sb(() => supabase.from('bot_orders')
+          .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+          .eq('id', row.id), { label: 'bot_orders→cancelled (биржа: уже отменён)', log }).catch(() => {});
+        log(`  ✓ ${row.side} @ ${row.price}: биржа сообщила, что ордер уже отменён → снят`);
       } else {
         remaining++;
-        log(`  ! отмена ${row.exchange_order_id} не прошла (${e.message}) — повтор на следующем тике`);
+        if (verbose) log(`  ! отмена ${row.exchange_order_id} не прошла (${e.message}) — повтор на следующем тике`);
       }
     }
   }
-  if (remaining > 0) log(`■ "${bot.name}": ещё ${remaining} ордеров снимаются — повтор на следующем тике`);
-  else               log(`■ остановка "${bot.name}" завершена`);
+  if (remaining === 0) {
+    stopFailStreak.delete(bot.id);
+    log(`■ остановка "${bot.name}" завершена`);
+    return;
+  }
+
+  const streak = prevStreak + 1;
+  stopFailStreak.set(bot.id, streak);
+  if (streak < STOP_FAIL_MAX) {
+    if (verbose || streak % 10 === 0)
+      log(`■ "${bot.name}": ещё ${remaining} ордеров снимаются — повтор на следующем тике (${streak}/${STOP_FAIL_MAX})`);
+    return;
+  }
+
+  // Терпение кончилось. Дальше повторять смысла нет: бот навсегда останется
+  // «останавливается», а лог забьётся одинаковыми строками. Закрываем строки и
+  // честно предупреждаем пользователя — вдруг ордера всё же остались на бирже.
+  stopFailStreak.delete(bot.id);
+  await sb(() => supabase.from('bot_orders')
+    .update({ status: 'cancelled', updated_at: new Date().toISOString() })
+    .eq('bot_id', bot.id).in('status', ['open', 'placing']),
+    { label: 'bot_orders→cancelled (остановка не подтвердилась)', log }).catch(() => {});
+  const msg = `Бот остановлен, но снятие ${remaining} ордеров биржа не подтвердила. Проверьте открытые ордера на бирже и при необходимости снимите их вручную.`;
+  await sb(() => supabase.from('bots')
+    .update({ status_message: msg, updated_at: new Date().toISOString() })
+    .eq('id', bot.id), { label: 'bots статус (остановка с остатком)', log }).catch(() => {});
+  log(`■ "${bot.name}": ${msg}`);
 }
 
 module.exports = { reconcileBot, handleFills, stopBot };
