@@ -147,14 +147,13 @@ function parseActiveOrders(raw, log) {
 // Создать ордер. data = { symbol, action, type, price?, amount?|total? } —
 // строки/числа по формату биржи. Возвращает result (id, status, ...).
 // ВАЖНО: БЕЗ автоповтора — повтор create_order может создать дубль (риск денег).
-// Безопасный повтор решает runner.js: если биржа ОТВЕТИЛА отказом, ордера точно нет
-// и повтор безвреден; если ответа не было — ищем «сироту» (runner.findOrphan).
+// Безопасный повтор реализован в runner.js: сверка с active_orders + «усыновление».
 async function createOrder(data, apiKey, secret) {
   return signedRequest('create_order', { category: 'spot', data }, apiKey, secret);
 }
 
 // Отменить ордер по его id (order_id — на уровне params, не в data).
-// Без автоповтора; повторную отмену с подтверждением ведёт runner.stopBot.
+// Без автоповтора; переотмену с подтверждением по active_orders ведёт runner.stopBot.
 async function cancelOrder(orderId, apiKey, secret) {
   return signedRequest('cancel_order', { category: 'spot', order_id: orderId }, apiKey, secret);
 }
@@ -195,42 +194,14 @@ async function getOrdersHistory(apiKey, secret, { symbol = 'CITRO/USDT', page = 
   }, apiKey, secret, { retries: 4 });
 }
 
-// Отметка времени ЗАВЕРШЕНИЯ ордера (мс). Нужна для замера, через сколько завершённый
-// ордер доезжает до orders_history (см. lagText в runner.js). create_date сюда НЕ
-// включаем: это момент создания, а не завершения.
-// ПРОВЕРЕНО 04.08.2026: в записи Citronus такого поля НЕТ (есть только create_date),
-// поэтому ts всегда null. Оставлено на случай, если биржа его добавит — заработает само.
-const HIST_TS_KEYS = ['finish_date', 'finished_at', 'finish_time', 'close_date', 'closed_at',
-                      'last_deal_date', 'deal_date', 'update_date', 'updated_at', 'mtime'];
-function parseHistoryTs(o) {
-  for (const k of HIST_TS_KEYS) {
-    const v = o[k];
-    if (v == null || v === '') continue;
-    const n = Number(v);
-    if (Number.isFinite(n) && n > 0) return n > 1e12 ? n : n * 1000;   // мс или секунды
-    const t = Date.parse(v);
-    if (Number.isFinite(t)) return t;
-  }
-  return null;
-}
-
-// Карта id ордера → факт исполнения { price, amount, fee, status, ts } из orders_history.
+// Карта id ордера → факт исполнения { price, amount, fee, status } из orders_history.
 // price = weighted_average_price (VWAP, QUOTE), amount = deals_amount (исполнено, BASE),
-// fee = комиссия в QUOTE (USDT), ts = когда ордер завершился. Поля, которых нет, — null.
-// При ПЕРВОМ разборе один раз логируем образец записи: так видно, какими словами биржа
-// называет статусы и какие в записи есть отметки времени (форма ответа не зафиксирована).
-let _historyShapeLogged = false;
-function parseOrdersHistory(raw, log) {
+// fee = комиссия в QUOTE (USDT). Поля, которых нет, остаются null.
+function parseOrdersHistory(raw) {
   const list = Array.isArray(raw) ? raw
              : (raw && Array.isArray(raw.items)  ? raw.items
              : (raw && Array.isArray(raw.orders) ? raw.orders
              : (raw && Array.isArray(raw.list)   ? raw.list : [])));
-
-  if (log && !_historyShapeLogged && list.length > 0) {
-    _historyShapeLogged = true;
-    log(`orders_history: образец записи: ${JSON.stringify(list[0]).slice(0, 700)}`);
-  }
-
   const map = new Map();
   for (const o of list) {
     const id = o.id != null ? o.id : (o.order_id != null ? o.order_id : o.orderId);
@@ -239,26 +210,13 @@ function parseOrdersHistory(raw, log) {
     const deal = parseFloat(o.deals_amount);
     const fee  = parseFloat(o.fee);
     map.set(String(id), {
-      price:   Number.isFinite(wap)  ? wap  : null,
-      amount:  Number.isFinite(deal) ? deal : null,
-      fee:     Number.isFinite(fee)  ? fee  : null,
-      status:  o.status != null ? String(o.status) : null,
-      ts:      parseHistoryTs(o),
-      created: parseCreateTs(o),
+      price:  Number.isFinite(wap)  ? wap  : null,
+      amount: Number.isFinite(deal) ? deal : null,
+      fee:    Number.isFinite(fee)  ? fee  : null,
+      status: o.status != null ? String(o.status) : null,
     });
   }
   return map;
-}
-
-// Дата СОЗДАНИЯ ордера (мс). Она в истории есть всегда (ISO-8601) и по ней же биржа
-// сортирует выдачу — на этом построено правило остановки листания.
-function parseCreateTs(o) {
-  const v = o.create_date != null ? o.create_date : o.created_at;
-  if (v == null || v === '') return null;
-  const n = Number(v);
-  if (Number.isFinite(n) && n > 0) return n > 1e12 ? n : n * 1000;
-  const t = Date.parse(v);
-  return Number.isFinite(t) ? t : null;
 }
 
 // Сколько страниц истории максимум читаем за один вызов (страховка от лишней
@@ -270,19 +228,11 @@ const HISTORY_MAX_PAGES = 5;
 // orders_history отдаётся страницами (page/page_size, новые сверху). Читать только
 // первую страницу опасно: недавно отменённый/исполненный ордер мог уехать за её
 // пределы — и тогда отмену на бирже легко принять за исполнение (см. C-2).
-// Поэтому читаем страницы, пока не найдём ВСЕ нужные ордера (wantedIds — id наших
-// открытых ордеров) ИЛИ пока не кончится история/лимит страниц.
-//
-// ГЛАВНОЕ ПРАВИЛО ОСТАНОВКИ — notOlderThan (мс): дата создания САМОГО СТАРОГО нашего
-// открытого ордера. Биржа умеет сортировать историю ТОЛЬКО по дате создания (по времени
-// завершения сортировки нет), мы берём порядок «от новых к старым». Значит как только
-// вся страница оказалась старше notOlderThan, дальше наших ордеров быть не может —
-// листать бессмысленно. Без этого правила ордер, который стоял с запуска бота и
-// исполнился только сегодня, ушёл бы за фиксированный лимит страниц и его исполнение
-// не заметили бы НИКОГДА. В обычном случае правило срабатывает на первой же странице.
+// Поэтому читаем страницы, пока не найдём ВСЕ нужные ордера (wantedIds — id тех,
+// что «пропали» из active_orders в этом цикле) ИЛИ пока не кончится история/лимит
+// страниц. В обычном случае все нужные id лежат на первой странице → один запрос.
 async function getOrdersHistoryMap(apiKey, secret,
-  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100,
-    notOlderThan = null, log = null } = {}) {
+  { symbol = 'CITRO/USDT', wantedIds = null, maxPages = HISTORY_MAX_PAGES, pageSize = 100 } = {}) {
   const map  = new Map();
   const want = wantedIds ? new Set([...wantedIds].map(String)) : null;
 
@@ -292,7 +242,7 @@ async function getOrdersHistoryMap(apiKey, secret,
     const raw = await getOrdersHistory(apiKey, secret, { symbol, page, pageSize });
     if (raw && Number.isFinite(+raw.pages)) totalPages = +raw.pages;
 
-    const pageMap = parseOrdersHistory(raw, log);
+    const pageMap = parseOrdersHistory(raw);
     if (pageMap.size === 0) break;    // пустая страница — дальше читать нечего
     for (const [id, v] of pageMap) if (!map.has(id)) map.set(id, v);
 
@@ -301,17 +251,6 @@ async function getOrdersHistoryMap(apiKey, secret,
       let allFound = true;
       for (const id of want) if (!map.has(id)) { allFound = false; break; }
       if (allFound) break;
-    }
-
-    // Вся страница старше наших открытых ордеров → глубже искать нечего.
-    // Записи без разобранной даты не учитываем: не знаем — значит не останавливаемся.
-    if (notOlderThan != null) {
-      let oldestOnPage = null;
-      for (const v of pageMap.values()) {
-        if (v.created == null) continue;
-        if (oldestOnPage == null || v.created < oldestOnPage) oldestOnPage = v.created;
-      }
-      if (oldestOnPage != null && oldestOnPage < notOlderThan) break;
     }
 
     page++;

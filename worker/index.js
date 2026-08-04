@@ -3,14 +3,10 @@
 //  воркер приводит биржу в соответствие.
 //
 //  Каждый тик (POLL_MS):
-//   • handleReconcile  — реагирует на исполнения (по истории завершённых ордеров)
-//                        и приводит сетку к плану (свежий старт ИЛИ достройка).
-//                        active_orders при этом НЕ читается: он нужен только когда
-//                        есть что запускать или доставлять (лимит 100 ордеров на
-//                        аккаунт и поиск «сироты» после обрыва связи);
+//   • handleReconcile  — для активных ботов приводит сетку к плану
+//                        (свежий старт ИЛИ достройка неполной сетки);
 //   • handleCancellations — снимает ордера ботов, которые перестали быть
-//                        активными (подтверждение — ответ на cancel_order
-//                        или история завершённых ордеров).
+//                        активными (с подтверждением по active_orders).
 //  Сверка идемпотентна и устойчива к сбоям сети (см. runner.js / net.js).
 //
 //  Запуск локально из КОРНЯ проекта:  node worker/index.js
@@ -96,8 +92,8 @@ async function loadKey(keyId) {
 }
 
 // Активные ордера аккаунта в едином виде [{id,side,price,amount}].
-// БРОСАЕТ при сбое — вызывающий решает, что делать (молча вернуть [] нельзя:
-// пустой список означал бы «ордеров нет», а это может быть просто сбой чтения).
+// БРОСАЕТ при сбое — вызывающий решает, что делать (важно: НЕЛЬЗЯ молча вернуть
+// [], иначе stopBot решит, что ордеров нет, и пометит живые «отменёнными»).
 async function loadActiveOrders(apiKey, secret) {
   return citronus.parseActiveOrders(await citronus.getActiveOrders(apiKey, secret), log);
 }
@@ -108,14 +104,6 @@ async function loadActiveOrders(apiKey, secret) {
 // всплывёт как «Ошибка» в UI. Считаем подряд идущие отказы; сетевые сбои не в счёт.
 const keyFailCount = new Map();   // api_key_id → тиков подряд с отказом биржи
 const KEY_FAIL_THRESHOLD = 3;     // ~3 тика (≈6 c) устойчивого отказа = фатально
-
-// Сколько тиков подряд не читается active_orders. Только для того, чтобы не писать
-// одинаковую строку каждые пару секунд: боту этот список для торговли не нужен.
-const activeFailStreak = new Map();   // api_key_id → тиков подряд без списка
-
-// То же для отложенного свежего запуска: бот может ждать данные долго, и одинаковая
-// строка каждые пару секунд ничего не добавляет.
-const freshWaitStreak = new Map();    // bot.id → тиков подряд отложенного запуска
 
 // Останавливает всех ботов аккаунта с причиной (status_message → «Ошибка» в UI).
 async function markKeyError(bots, message) {
@@ -154,7 +142,7 @@ async function handleReconcile() {
   let rows;
   try {
     rows = await sb(() => supabase.from('bot_orders')
-      .select('id, bot_id, level_index, side, price, amount, status, exchange_order_id, partial, created_at')
+      .select('id, bot_id, level_index, side, price, amount, status, exchange_order_id, partial')
       .in('bot_id', ids).in('status', ['open', 'placing']),
       { label: 'чтение текущих ордеров', log });
   } catch (e) { log('ошибка чтения bot_orders:', e.message); return; }
@@ -166,12 +154,11 @@ async function handleReconcile() {
   }
 
   // Кому нужен свежий запуск (нет ордеров) или достройка (есть 'placing') —
-  // для них дополнительно понадобятся стакан/цена и список открытых ордеров.
+  // для них дополнительно понадобятся стакан/цена/баланс.
   const needWork = bots.filter(b => {
     const r = byBot.get(b.id) || [];
     return r.length === 0 || r.some(x => x.status === 'placing');
   });
-  const needWorkIds = new Set(needWork.map(b => b.id));
 
   // Параметры рынка (точность/минимумы) — нужны и для реакции на исполнение,
   // и для свежего старта. Не получили — берём безопасные значения CITRO/USDT.
@@ -202,16 +189,12 @@ async function handleReconcile() {
     const creds = await loadKey(keyId);
     if (!creds) continue;
 
-    // Баланс нужен для свежего запуска и для расчёта объёма встречных ордеров после
-    // исполнения (см. handleFills), поэтому читаем его каждый тик — ОДИН раз на ключ.
-    // Он же служит проверкой «жив ли ключ»: отозванный ключ ловим именно здесь (раньше
-    // это делал active_orders, который мы больше не дёргаем в обычной работе).
-    let balance = null;
+    let activeOrders;
     try {
-      balance = await citronus.getBalance(creds.apiKey, creds.secret);
-      keyFailCount.delete(keyId);                  // успех — сбрасываем счётчик отказов
+      activeOrders = await loadActiveOrders(creds.apiKey, creds.secret);
+      keyFailCount.delete(keyId);                 // успех — сбрасываем счётчик отказов
     } catch (e) {
-      if (isAuthError(e)) {                        // биржа отвергает КЛЮЧ — вероятно отозван/недействителен
+      if (isAuthError(e)) {                        // биржа отвергает КЛЮЧ (auth) — вероятно отозван/недействителен
         const n = (keyFailCount.get(keyId) || 0) + 1;
         keyFailCount.set(keyId, n);
         log(`ключ ${keyId} отвергнут биржей (${n}/${KEY_FAIL_THRESHOLD}): ${e.message}`);
@@ -220,36 +203,21 @@ async function handleReconcile() {
           await markKeyError(keyBots, 'Ключ API не принят биржей. Проверьте или обновите ключ на бирже.');
           keyFailCount.delete(keyId);
         }
-        continue;                                  // проблема в ключе — остальные запросы тоже не пройдут
+      } else if (e.citronus || e.httpStatus) {     // иной ответ-ошибка биржи (не auth) — для чтения необычно, считаем временным
+        log(`active_orders: ответ-ошибка биржи (не ключ), пропуск тика: ${e.message}`);
+      } else {                                     // нет ответа сервера — сетевой сбой
+        log('active_orders не получены (сеть, пропуск аккаунта):', e.message);
       }
-      log('баланс не получен (свежий запуск/докомпенсация пропустятся):', e.message);
+      continue;                                    // без active_orders аккаунт в этот тик не трогаем
     }
+    let openOrdersCount = activeOrders.length;
 
-    // active_orders читаем ТОЛЬКО когда есть что запускать или доставлять: он нужен для
-    // подсчёта лимита в 100 ордеров на аккаунт и для поиска «сироты» после обрыва связи.
-    // Когда сетка просто стоит, список не нужен вовсе — исполнения ловятся по истории.
-    // Так мы и не зависим от ненадёжного метода, и экономим по запросу на ключ за тик.
-    // Не прочитали → «список неизвестен» (null, а НЕ пустой): откладываем только запуск.
-    let activeOrders = null;
-    if (keyBots.some(b => needWorkIds.has(b.id))) {
-      try {
-        activeOrders = await loadActiveOrders(creds.apiKey, creds.secret);
-        if (activeFailStreak.has(keyId)) {         // список снова читается — сообщаем один раз
-          log(`active_orders: чтение восстановлено (было ${activeFailStreak.get(keyId)} тиков без списка)`);
-          activeFailStreak.delete(keyId);
-        }
-      } catch (e) {
-        // Пишем первую попытку и далее каждую 20-ю (~раз в минуту), иначе одинаковые
-        // строки забивают весь журнал.
-        const n = (activeFailStreak.get(keyId) || 0) + 1;
-        activeFailStreak.set(keyId, n);
-        if (n === 1 || n % 20 === 0)
-          log(`active_orders не получены (${n} тик подряд): ${e.message} — свежие запуски отложены`);
-      }
-    }
-    // Ниже по коду важно отличать «список пуст» ([]) от «список неизвестен» (null):
-    // в первом случае «сироты» на бирже точно нет, во втором мы просто не знаем.
-    let openOrdersCount = activeOrders ? activeOrders.length : 0;
+    // Баланс нужен и для свежего запуска, и для докомпенсации объёма встречных
+    // ордеров (см. handleFills). Берём ОДИН раз на ключ за тик (лимит запросов
+    // держит по-ключевой ограничитель — превысить его этот вызов не может).
+    let balance = null;
+    try { balance = await citronus.getBalance(creds.apiKey, creds.secret); }
+    catch (e) { log('баланс не получен (свежий запуск/докомпенсация пропустятся):', e.message); }
 
     const fillCtx = { activeOrders, baseDec, priceDec, minQty, minAmt, balance,
       commissionBuy:  (market && parseFloat(market.commission_limit_buy))  || 0,
@@ -266,17 +234,10 @@ async function handleReconcile() {
       // 2) Свежий запуск / достройка сетки
       const isFresh    = botRows.length === 0;
       const hasPlacing = botRows.some(r => r.status === 'placing');
-      // Свежий запуск требует полной картины: без списка открытых ордеров нельзя
-      // проверить лимит в 100 ордеров на аккаунт, поэтому откладываем до следующего
-      // тика. Уже работающие боты от этого не страдают — им список не нужен.
-      if (isFresh && (!market || !ob || !price || !balance || activeOrders === null)) {
-        const n = (freshWaitStreak.get(bot.id) || 0) + 1;
-        freshWaitStreak.set(bot.id, n);   // ждать можем долго — пишем не каждый тик
-        if (n === 1 || n % 20 === 0)
-          log(`  запуск "${bot.name}" отложен (${n} тик подряд) — нет рынка/стакана/цены/баланса/списка ордеров`);
+      if (isFresh && (!market || !ob || !price || !balance)) {
+        log(`  пропуск свежего запуска "${bot.name}" — в этом тике нет рынка/стакана/цены/баланса`);
         continue;
       }
-      freshWaitStreak.delete(bot.id);
       if (!isFresh && !hasPlacing) continue; // всё стоит — достраивать нечего
 
       // Сверку одного бота изолируем: непредвиденная ошибка не должна прерывать
@@ -329,12 +290,14 @@ async function handleCancellations() {
     const creds = await loadKey(keyId);
     if (!creds) continue;
 
-    // active_orders здесь не нужен: остановка подтверждает снятие ответом на
-    // cancel_order или историей завершённых ордеров. Раньше мы пропускали весь
-    // аккаунт, если этот список не прочитался, — теперь сбой ненадёжного метода
-    // больше не мешает боту остановиться.
+    // Если активные ордера не прочитать — НЕ запускаем stopBot: иначе он решит,
+    // что ордеров нет, и пометит живые «отменёнными» (а отменить их мы не смогли).
+    let activeOrders;
+    try { activeOrders = await loadActiveOrders(creds.apiKey, creds.secret); }
+    catch (e) { log('active_orders не получены при отмене (пропуск аккаунта):', e.message); continue; }
+
     for (const bot of keyBots) {
-      await runner.stopBot(bot,
+      await runner.stopBot(bot, { activeOrders },
         { supabase, citronus, apiKey: creds.apiKey, secret: creds.secret, log });
     }
   }
