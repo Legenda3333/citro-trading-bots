@@ -131,8 +131,9 @@ function feeUsdt(side, hist, price, base, rate) {
 }
 
 // ЗАМЕР ЗАДЕРЖКИ. Сколько прошло между тем, как ордер завершился на бирже, и тем, как
-// бот это увидел. Складывается из задержки orders_history и нашего цикла (~5-7 c при
-// двух ботах). Отметки времени в записи нет или она бессмысленная — молчим.
+// бот это увидел. ВАЖНО: на 04.08.2026 Citronus в orders_history отдаёт только create_date
+// (момент создания), отметки завершения там нет — значит приписка не появляется вообще.
+// Оставлено на случай, если биржа добавит поле: тогда замер включится сам.
 function lagText(hc) {
   if (!hc || !Number.isFinite(hc.ts)) return '';
   const sec = Math.round((Date.now() - hc.ts) / 1000);
@@ -551,15 +552,30 @@ async function handleFills(bot, botRows, ctx, deps) {
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
+      let res;
       try {
-        const res = await citronus.createOrder(
+        res = await citronus.createOrder(
           { symbol: SYMBOL, action: f.side, type: 'limit', price: String(f.price), amount: String(f.amount) }, apiKey, secret);
-        await sb(() => supabase.from('bot_orders')
-          .update({ exchange_order_id: res.id || null, updated_at: new Date().toISOString() })
-          .eq('id', f.id), { label: `восстановление ур.${f.level_index}`, log }).catch(() => {});
-        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})${lagText(hc)}`);
       } catch (e) {
         log(`  ! не удалось восстановить ур.${f.level_index}: ${e.message} — повтор на следующем тике`);
+        occupied.add(f.level_index);
+        continue;
+      }
+      // Ордер восстановлен на бирже. Пишем его номер. Если запись сорвётся, в строке
+      // останется СТАРЫЙ (уже отменённый) номер — на следующем тике бот снова признает
+      // уровень отменённым и восстановит его ВТОРОЙ раз, а на уровне окажется два живых
+      // ордера. Поэтому не записали — сразу снимаем только что выставленный.
+      try {
+        await sb(() => supabase.from('bot_orders')
+          .update({ exchange_order_id: res.id || null, updated_at: new Date().toISOString() })
+          .eq('id', f.id), { label: `восстановление ур.${f.level_index}`, log });
+        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})${lagText(hc)}`);
+      } catch (writeErr) {
+        log(`  ! ур.${f.level_index}: ордер ${res && res.id} восстановлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
+        if (res && res.id) {
+          try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
+          catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — на ур.${f.level_index} возможен дубль`); }
+        }
       }
       occupied.add(f.level_index);
       continue;

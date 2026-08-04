@@ -195,10 +195,11 @@ async function getOrdersHistory(apiKey, secret, { symbol = 'CITRO/USDT', page = 
   }, apiKey, secret, { retries: 4 });
 }
 
-// Отметка времени ЗАВЕРШЕНИЯ ордера (мс). Точное имя поля у биржи не зафиксировано,
-// поэтому пробуем правдоподобные варианты и берём первое разумное. create_date сюда
-// НЕ включаем: это момент создания, а не завершения. Нужна только для замера, через
-// сколько завершённый ордер доезжает до orders_history (см. лог задержки в runner.js).
+// Отметка времени ЗАВЕРШЕНИЯ ордера (мс). Нужна для замера, через сколько завершённый
+// ордер доезжает до orders_history (см. lagText в runner.js). create_date сюда НЕ
+// включаем: это момент создания, а не завершения.
+// ПРОВЕРЕНО 04.08.2026: в записи Citronus такого поля НЕТ (есть только create_date),
+// поэтому ts всегда null. Оставлено на случай, если биржа его добавит — заработает само.
 const HIST_TS_KEYS = ['finish_date', 'finished_at', 'finish_time', 'close_date', 'closed_at',
                       'last_deal_date', 'deal_date', 'update_date', 'updated_at', 'mtime'];
 function parseHistoryTs(o) {
