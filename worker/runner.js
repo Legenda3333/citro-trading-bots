@@ -640,12 +640,21 @@ async function handleFills(bot, botRows, ctx, deps) {
   //      Случаи C собираем в completions и применяем АТОМАРНО (apply_fills).
   const completions = [];   // {f, base, fee, quote, price} — завершённые уровни
   let heldAlive  = 0;       // сколько «пропавших» ордеров признано живыми (нет подтверждения историей)
+  const heldStatuses = new Set();   // какие именно статусы встретились — чтобы было видно в логе
   for (const f of filled) {
     const hc       = histMap.get(String(f.exchange_order_id)) || {};
     const dealsAmt = Number.isFinite(hc.amount) ? hc.amount : null;   // фактически исполнено (BASE)
-    const isCancel = hc.status && /cancel/i.test(hc.status);
     const prev     = (f.partial && typeof f.partial === 'object') ? f.partial : null; // накоплено ранее
-    const executed = dealsAmt != null && dealsAmt > 1e-9;            // история подтверждает исполнение
+    // ЕЩЁ ЖИВЫЕ состояния, которые может вернуть биржа (её список статусов: created,
+    // placed, in_order_book, partially_fulfilled, partially_filled, completed, fulfilled,
+    // canceled, marked_for_cancel). Проверяем их ПЕРВЫМИ, иначе:
+    //   • 'marked_for_cancel' содержит слово «cancel» → бот счёл бы уровень отменённым и
+    //     восстановил его поверх ЖИВОГО ордера (два ордера на уровне);
+    //   • 'partially_*' имеет исполненный объём → бот счёл бы уровень завершённым, записал
+    //     сделку и выставил встречный, пока исходный ордер ещё торгуется.
+    const alive    = hc.status ? /marked_for_cancel|partial/i.test(hc.status) : false;
+    const isCancel = !alive && hc.status && /cancel/i.test(hc.status);
+    const executed = !alive && dealsAmt != null && dealsAmt > 1e-9;   // история подтверждает исполнение
 
     // САНИТИ-ПРОВЕРКА. Кандидаты уже отобраны как терминальные по истории, поэтому сюда
     // «терминальный, но ни исполнения (deals_amount>0), ни отмены» попадёт лишь при странной
@@ -653,20 +662,36 @@ async function handleFills(bot, botRows, ctx, deps) {
     if (!isCancel && !executed) {
       occupied.add(f.level_index);
       heldAlive++;   // по каждому НЕ логируем (засоряет) — сведём в одну строку после цикла
+      heldStatuses.add(hc.status ? String(hc.status) : 'без статуса');
       continue;
     }
 
     // A. Полная отмена (ничего не исполнилось) → восстановить ордер тем же объёмом.
     if (isCancel && !(dealsAmt != null && dealsAmt > 1e-9)) {
+      let res;
       try {
-        const res = await citronus.createOrder(
+        res = await citronus.createOrder(
           { symbol: SYMBOL, action: f.side, type: 'limit', price: String(f.price), amount: String(f.amount) }, apiKey, secret);
-        await sb(() => supabase.from('bot_orders')
-          .update({ exchange_order_id: res.id || null, updated_at: new Date().toISOString() })
-          .eq('id', f.id), { label: `восстановление ур.${f.level_index}`, log }).catch(() => {});
-        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})`);
       } catch (e) {
         log(`  ! не удалось восстановить ур.${f.level_index}: ${e.message} — повтор на следующем тике`);
+        occupied.add(f.level_index);
+        continue;
+      }
+      // Ордер восстановлен на бирже. Пишем его номер. Если запись сорвётся, в строке
+      // останется СТАРЫЙ (уже отменённый) номер — на следующем тике бот снова признает
+      // уровень отменённым и восстановит его ВТОРОЙ раз, и так по кругу. Поэтому не
+      // записали — сразу снимаем только что выставленный ордер.
+      try {
+        await sb(() => supabase.from('bot_orders')
+          .update({ exchange_order_id: res.id || null, updated_at: new Date().toISOString() })
+          .eq('id', f.id), { label: `восстановление ур.${f.level_index}`, log });
+        log(`  ↻ ордер ${f.side} @ ${f.price} (ур.${f.level_index}) отменён на бирже — восстановлен (id=${res.id})`);
+      } catch (writeErr) {
+        log(`  ! ур.${f.level_index}: ордер ${res && res.id} восстановлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
+        if (res && res.id) {
+          try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
+          catch (cErr) { log(`  ! не снял ${res.id}: ${cErr.message} — на ур.${f.level_index} возможен дубль`); }
+        }
       }
       occupied.add(f.level_index);
       continue;
@@ -717,7 +742,7 @@ async function handleFills(bot, botRows, ctx, deps) {
 
   // Редкий случай: запись в истории есть, но она ни «исполнено», ни «отменено» (странный
   // статус). Такие уровни считаем живыми и ждём. В норме heldAlive=0.
-  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. с неоднозначной записью истории — считаю живыми`);
+  if (heldAlive > 0) log(`  · "${bot.name}": ${heldAlive} ур. считаю живыми (статус в истории: ${[...heldStatuses].join(', ')})`);
 
   if (completions.length === 0) return;
 
@@ -890,6 +915,9 @@ async function stopBot(bot, ctx, deps) {
           { symbol: SYMBOL, wantedIds: [row.exchange_order_id], maxPages: 2 });
         hc = hm.get(String(row.exchange_order_id)) || null;
       } catch { /* историю не прочитали — считаем не подтверждённым, повтор */ }
+      // Запись есть, но состояние ещё ЖИВОЕ (помечен на отмену / частично исполнен и
+      // продолжает стоять) — это не подтверждение снятия, повторяем на следующем тике.
+      if (hc && hc.status && /marked_for_cancel|partial/i.test(hc.status)) hc = null;
       if (hc) {
         const filledBase = Number.isFinite(hc.amount) ? hc.amount : 0;
         const isCancel   = hc.status && /cancel/i.test(hc.status);
