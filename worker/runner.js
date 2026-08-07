@@ -98,6 +98,36 @@ async function loadClaimedIds(supabase, log) {
   }
 }
 
+// ЧЕМ ЗАКОНЧИЛАСЬ ПОПЫТКА ПОСТАВИТЬ ОРДЕР.
+// Если биржа ОТВЕТИЛА отказом по существу (не хватает средств, лимит, кривые параметры)
+// — ордера точно нет, повторять безопасно. А вот «ответа не было» (таймаут, обрыв) и
+// внутренняя ошибка сервера (HTTP 5xx или code вида internal_server_error) о судьбе
+// ордера не говорят НИЧЕГО: он мог быть создан до того, как у биржи упало. Раньше нас
+// невольно прикрывала её дедупликация — одинаковый повтор второй ордер не создавал; с
+// уникальными номерами запросов эта страховка исчезла, и слепой повтор даст ДВА живых
+// ордера на уровне, причём второй не отслеживается и не снимется при остановке.
+function ambiguousOutcome(e) {
+  if (!e) return false;
+  if (!e.citronus && !e.httpStatus) return true;          // ответа не было вовсе
+  if (e.httpStatus >= 500) return true;                    // сервер биржи упал
+  const code = (e.citronus && e.citronus.code) ? String(e.citronus.code) : '';
+  return /internal|server[\s_-]?error|timeout/i.test(`${code} ${e.message || ''}`);
+}
+
+// Строки с неопределённым исходом. Держим в памяти воркера ограниченное время: метка
+// нужна только до ближайшей успешной сверки с биржей. Перезапуск метки теряет — тогда
+// сработает обычное усыновление, оно и так идёт перед каждой постановкой.
+const UNKNOWN_TTL_MS   = 10 * 60 * 1000;
+const unknownPlacement = new Map();     // bot_orders.id → когда была неопределённая попытка
+function markUnknown(rowId)  { unknownPlacement.set(rowId, Date.now()); }
+function clearUnknown(rowId) { unknownPlacement.delete(rowId); }
+function isUnknown(rowId) {
+  const at = unknownPlacement.get(rowId);
+  if (at == null) return false;
+  if (Date.now() - at > UNKNOWN_TTL_MS) { unknownPlacement.delete(rowId); return false; }
+  return true;
+}
+
 // Помешают ли обмену НАШИ ЖЕ ордера. Биржа не даёт рыночному ордеру исполниться о
 // собственные лимитки того же аккаунта — и сообщает об этом крайне неудачно: ордер
 // помечается «завершённым» с нулевым исполнением, деньги не конвертируются, а сетка
@@ -369,8 +399,19 @@ async function reconcileBot(bot, ctx, deps) {
       await sb(() => supabase.from('bot_orders')
         .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
         .eq('id', row.id), { label: `усыновление ур.${row.level_index}`, log }).catch(() => {});
+      clearUnknown(row.id);
       adopted++; placed++;
       log(`  ✓ уровень ${row.level_index}: ордер уже на бирже (id=${m.id}) — усыновлён`);
+      continue;
+    }
+    // Прошлая попытка по этой строке закончилась неопределённо — ордер мог встать.
+    // Единственная проверка «не встал ли он» — сверка выше, а она работает только когда
+    // прочитаны занятые номера. Не прочитаны → вслепую не выставляем, ждём следующего
+    // тика: лишний ордер на уровне хуже, чем задержка (а если не прояснится, бота
+    // остановит общий счётчик неудач).
+    if (isUnknown(row.id) && !claimed) {
+      failed++;
+      log(`  ? ур.${row.level_index}: прошлая попытка без определённого ответа, проверить нечем — жду, чтобы не выставить дубль`);
       continue;
     }
     // Ужатие под факт. Если реально свободного меньше объёма — ужимаем ордер (иначе биржа
@@ -395,7 +436,14 @@ async function reconcileBot(bot, ctx, deps) {
       // ответ биржи целиком (кроме текста там бывают code и data) и тело, которое реально
       // ушло. Секретов в теле нет — ключ и подпись живут в заголовках. Убрать после разбора.
       const err = e.citronus || null;
-      log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      if (ambiguousOutcome(e)) {
+        // Биржа не сказала, создан ордер или нет. Метим строку: перед повтором
+        // обязательно сверимся с её списком ордеров (см. проверку выше по циклу).
+        markUnknown(row.id);
+        log(`  ? ${row.side} ${amount} CITRO @ ${row.price} — биржа не дала определённого ответа (${e.message}); перед повтором проверю, не встал ли ордер`);
+      } else {
+        log(`  ✗ ${row.side} ${amount} CITRO @ ${row.price} — ОШИБКА: ${e.message} (повтор на следующем тике)`);
+      }
       log(`    [диаг] http=${e.httpStatus || '—'} код=${(err && err.code) || '—'} данные=${JSON.stringify(err && err.data) || '—'} ответ=${JSON.stringify(err) || '—'}`);
       log(`    [диаг] отправляли: ${JSON.stringify(data)}`);
       continue;
@@ -408,6 +456,7 @@ async function reconcileBot(bot, ctx, deps) {
       if (amount !== Number(row.amount)) patch.amount = amount;   // ужали — сохраняем фактический объём
       await sb(() => supabase.from('bot_orders').update(patch)
         .eq('id', row.id), { label: `bot_orders→open ур.${row.level_index}`, log });
+      clearUnknown(row.id);     // выставлено и записано — неопределённости больше нет
       if (bal) { if (row.side === 'sell') bal.CITRO -= amount; else bal.USDT -= amount * Number(row.price); } // резервируем в снимке
       placed++;
       if (amount !== Number(row.amount))
@@ -419,7 +468,12 @@ async function reconcileBot(bot, ctx, deps) {
       log(`  ! ур.${row.level_index}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
       if (res && res.id) {
         try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
-        catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+        catch (cErr) {
+          // Сироту снять не удалось — он мог остаться живым. Метим строку: на следующем
+          // тике сверка подберёт именно его вместо постановки нового.
+          markUnknown(row.id);
+          log(`  ! не снял сироту ${res.id}: ${cErr.message} — попробую подобрать его на следующем тике`);
+        }
       }
     }
   }
@@ -464,7 +518,14 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, claimed,
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: m.id, status: 'open', updated_at: new Date().toISOString() })
       .eq('id', row.id), { label: `${what} adopt`, log }).catch(() => {});
+    clearUnknown(row.id);
     log(`  ✓ ${what} ${side} @ ${price}: уже на бирже (id=${m.id}) — усыновлён`);
+    return;
+  }
+  // Прошлая попытка закончилась неопределённо, а сверить не с чем → не выставляем
+  // вслепую. Строка остаётся 'placing', её доставит reconcileBot (см. там же).
+  if (isUnknown(row.id) && !claimed) {
+    log(`  ? ${what} ${side} @ ${price}: прошлая попытка без определённого ответа, проверить нечем — жду`);
     return;
   }
   let res;
@@ -472,7 +533,12 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, claimed,
     res = await citronus.createOrder(
       { symbol: SYMBOL, action: side, type: 'limit', price: String(price), amount: String(qty) }, apiKey, secret);
   } catch (e) {
-    log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    if (ambiguousOutcome(e)) {
+      markUnknown(row.id);
+      log(`  ? ${what} ${side} ${qty} CITRO @ ${price} — биржа не дала определённого ответа (${e.message}); перед повтором проверю`);
+    } else {
+      log(`  ✗ ${what} ${side} ${qty} CITRO @ ${price} — ОШИБКА: ${e.message} (достроится на следующем тике)`);
+    }
     return;
   }
   // create_order прошёл. Если запись id сорвётся — отменяем ордер (иначе «сирота» → дубль).
@@ -480,12 +546,16 @@ async function placeRow(deps, bot, row, side, price, qty, activeOrders, claimed,
     await sb(() => supabase.from('bot_orders')
       .update({ exchange_order_id: res.id || null, status: 'open', updated_at: new Date().toISOString() })
       .eq('id', row.id), { label: `${what}→open`, log });
+    clearUnknown(row.id);
     log(`  ✓ ${what} ${side} ${qty} CITRO @ ${price} → id=${res.id} (${res.status})`);
   } catch (writeErr) {
     log(`  ! ${what} ${side} @ ${price}: ордер ${res && res.id} выставлен, но не записан (${writeErr.message}) — отменяю во избежание дубля`);
     if (res && res.id) {
       try { await citronus.cancelOrder(res.id, apiKey, secret); log(`  ↩ ${res.id} отменён (дубль предотвращён)`); }
-      catch (cErr) { log(`  ! не снял сироту ${res.id}: ${cErr.message} — возможен дубль`); }
+      catch (cErr) {
+        markUnknown(row.id);
+        log(`  ! не снял сироту ${res.id}: ${cErr.message} — попробую подобрать его на следующем тике`);
+      }
     }
   }
 }
