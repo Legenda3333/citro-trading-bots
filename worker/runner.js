@@ -21,7 +21,7 @@
 //  ctx  = { market, ob, price, balance, openOrdersCount, activeOrders, botRows }
 const engine   = require('./engine');
 const GridCore = require('../bots/spot-grid/grid-core.js');
-const { withRetry } = require('./net');
+const { withRetry, sleep } = require('./net');
 const { sb, SB_TIMEOUT_MS } = require('./db');
 const { ORDER_LIMIT, ORDER_LIMIT_MESSAGE } = require('../api/_exchange');
 
@@ -42,6 +42,20 @@ const COUNTER_SELL_HAIRCUT = 0.001;
 // чем свободный баланс × этот коэффициент — защита от «дрожи» баланса/округления,
 // чтобы ордер гарантированно был обеспечен (тот же смысл, что у хайрката).
 const TOPUP_SAFETY = 0.999;
+
+// Проверка обмена. Биржа отвечает на рыночный ордер `status: "placed"` — это «принят»,
+// а НЕ «исполнен». Подтверждено 07.08.2026: рыночная продажа 109.14 CITRO получила в
+// истории статус «Завершено» при нулевом исполнении, деньги не конвертировались, и
+// сетка была обречена ещё до постановки. Поэтому ответу не верим, а перечитываем
+// баланс — он и есть ответ на вопрос «можем ли мы теперь собрать сетку». Даём бирже
+// несколько секунд на зачисление; не подтвердилось — сетку не строим вовсе.
+const FUND_CHECK_TRIES    = 4;
+const FUND_CHECK_PAUSE_MS = 1500;
+// Допуск: обмен почти никогда не попадает в потребность копейка в копейку — мешают
+// комиссия рыночного ордера и дрожь стакана. Недобор в пределах процента нормален и
+// добирается ужатием последнего ордера под факт. А вот неисполнившийся обмен — это
+// недобор в десятки процентов, его этот допуск не пропустит.
+const FUND_TOLERANCE = 0.01;
 
 // Сколько тиков подряд «недоставленной» сетки терпим, прежде чем остановить бота с
 // ошибкой (его ордера затем снимет handleCancellations). Неполная сетка недопустима:
@@ -124,7 +138,8 @@ async function reconcileBot(bot, ctx, deps) {
   const { supabase, citronus, apiKey, secret, log } = deps;
   const active = ctx.activeOrders || [];
   let rows = (ctx.botRows || []).slice();
-  const freshCycle = rows.length === 0;   // свежий запуск: снимок баланса устарел (обмен идёт внутри) → без ужатия
+  const freshCycle = rows.length === 0;   // свежий запуск: снимок баланса устарел (обмен идёт внутри)
+  let freshBalance = null;                // баланс, перечитанный ПОСЛЕ обмена (см. ниже)
 
   // СВЕЖИЙ ЦИКЛ: ни одного открытого/размещаемого ордера
   if (rows.length === 0) {
@@ -186,16 +201,61 @@ async function reconcileBot(bot, ctx, deps) {
         log(`  обмен (market ${data.action}): ${JSON.stringify(data)}`);
         const res = await citronus.createOrder(data, apiKey, secret);
         didRebalance = true;
-        log(`  ✓ обмен выполнен: id=${res.id} status=${res.status}`);
+        log(`  ✓ обмен принят биржей: id=${res.id} status=${res.status} — проверяю, исполнился ли он`);
+
+        // ПОДТВЕРЖДЕНИЕ ОБМЕНА по балансу (см. FUND_CHECK_TRIES).
+        let funded = false, fresh = null;
+        for (let i = 1; i <= FUND_CHECK_TRIES; i++) {
+          if (i > 1) await sleep(FUND_CHECK_PAUSE_MS);
+          try { fresh = await citronus.getBalance(apiKey, secret); }
+          catch (e) { log(`  ! баланс после обмена не прочитан (${e.message}) — повтор`); continue; }
+          const okCitro = fresh.CITRO + 1e-8 >= needCitro * (1 - FUND_TOLERANCE);
+          const okUsdt  = fresh.USDT  + 1e-8 >= needUsdt  * (1 - FUND_TOLERANCE);
+          if (okCitro && okUsdt) { funded = true; break; }
+          log(`  · после обмена средств пока не хватает (CITRO ${fresh.CITRO}/${needCitro}, USDT ${fresh.USDT}/${needUsdt}) — жду ${i}/${FUND_CHECK_TRIES}`);
+        }
+
+        // Факт обмена берём из истории завершённых: у рыночного ордера поля price/
+        // current_amount/total приходят пустыми, реальные цифры есть только там.
+        let hc = null;
+        if (res.id) {
+          try {
+            const hm = await citronus.getOrdersHistoryMap(apiKey, secret, { symbol: SYMBOL, wantedIds: [res.id], maxPages: 2 });
+            hc = hm.get(String(res.id)) || null;
+          } catch (e) { log(`  ! факт обмена из истории не прочитан (${e.message})`); }
+        }
+        const cAmount = hc && Number.isFinite(hc.amount) ? hc.amount
+                      : (res.current_amount != null ? parseFloat(res.current_amount) : null);
+        const cPrice  = hc && Number.isFinite(hc.price) ? hc.price
+                      : (res.price != null ? parseFloat(res.price) : null);
+        const cFee    = hc && Number.isFinite(hc.fee) ? hc.fee
+                      : (res.fee != null ? parseFloat(res.fee) : null);
+        const cTotal  = (cPrice != null && cAmount != null) ? cPrice * cAmount
+                      : (res.market_total_current != null ? parseFloat(res.market_total_current)
+                      : (res.total != null ? parseFloat(res.total) : null));
+        log(`  обмен по факту: исполнено ${cAmount != null ? cAmount : '?'} по цене ${cPrice != null ? cPrice : '?'} (статус в истории: ${hc && hc.status ? hc.status : 'нет записи'})`);
+
         await sb(() => supabase.from('bot_trades').upsert({
           bot_id: bot.id, exchange_order_id: res.id || null, side: data.action, kind: 'rebalance',
-          price:  res.price          != null ? parseFloat(res.price)          : null,
-          amount: res.current_amount != null ? parseFloat(res.current_amount) : null,
-          total:  res.total          != null ? parseFloat(res.total)          : null,
-          fee:    res.fee            != null ? parseFloat(res.fee)            : null,
-          raw: res, filled_at: new Date().toISOString()
+          price: cPrice, amount: cAmount, total: cTotal, fee: cFee,
+          raw: { response: res, history: hc }, filled_at: new Date().toISOString()
         }, { onConflict: 'bot_id,exchange_order_id,kind', ignoreDuplicates: true }),
           { label: 'bot_trades (обмен)', log, attempts: 2 }).catch((e) => log(`  ! лог обмена не записан (не критично): ${e.message}`));
+
+        // Обмен не дал нужных средств → сетку НЕ выставляем вовсе: неполная сетка
+        // недопустима, а половина ордеров при уже потраченном обмене — худший исход.
+        if (!funded) {
+          const msg = 'Обмен на бирже не исполнился, сетка не выставлена. Проверьте баланс и запустите бота заново.';
+          log(`  ✗ ${msg}`);
+          await sb(() => supabase.from('bots')
+            .update({ status: 'inactive', status_message: msg, updated_at: new Date().toISOString() })
+            .eq('id', bot.id), { label: 'bots→inactive (обмен не исполнился)', log }).catch(() => {});
+          return 0;
+        }
+        // Свежий баланс пригодится при постановке: если обмен недобрал процент,
+        // последний ордер ужмётся под факт, а не упадёт с «недостаточно средств».
+        freshBalance = fresh;
+        log(`  ✓ средства подтверждены: CITRO ${fresh.CITRO} при нужных ${needCitro}, USDT ${fresh.USDT} при нужных ${needUsdt}`);
       } catch (e) {
         log(`  ✗ ОШИБКА обмена: ${e.message} — запуск прерван, бот не активирован`);
         await sb(() => supabase.from('bots')
@@ -248,13 +308,14 @@ async function reconcileBot(bot, ctx, deps) {
   if (placingRows.length === 0) { placeFailStreak.delete(bot.id); return 0; } // всё выставлено
 
   // СТРАХОВКА ПО СРЕДСТВАМ: ужимаем ордер под реально свободный баланс, чтобы биржа не
-  // отклоняла его по нехватке средств → эскалация в стоп. Баланс берём ТОЛЬКО для достройки
-  // (в свежем цикле снимок устарел до обмена). Параметры рынка — из тика.
+  // отклоняла его по нехватке средств → эскалация в стоп. В свежем цикле снимок из тика
+  // устарел (он до обмена), поэтому берём баланс, перечитанный ПОСЛЕ обмена; если обмена
+  // не было — снимок и так актуален. Параметры рынка — из тика.
   const market  = ctx.market || {};
   const baseDec = Number.isInteger(market.trade_base_precision) ? market.trade_base_precision : 2;
   const minQty  = parseFloat(market.min_order_qty) || 1;
   const minAmt  = parseFloat(market.min_order_amt) || 0.1;
-  const bal     = freshCycle ? null : (ctx.balance || null);
+  const bal     = freshCycle ? freshBalance : (ctx.balance || null);
 
   // Читаем ОДИН раз на всю пачку: чьи ордера уже заняты (см. findActive).
   const claimed = await loadClaimedIds(supabase, log);
