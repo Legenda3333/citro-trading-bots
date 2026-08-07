@@ -98,6 +98,35 @@ async function loadClaimedIds(supabase, log) {
   }
 }
 
+// Помешают ли обмену НАШИ ЖЕ ордера. Биржа не даёт рыночному ордеру исполниться о
+// собственные лимитки того же аккаунта — и сообщает об этом крайне неудачно: ордер
+// помечается «завершённым» с нулевым исполнением, деньги не конвертируются, а сетка
+// остаётся без средств (подтверждено на бирже 07.08.2026). Поэтому смотрим ЗАРАНЕЕ:
+// проходим стакан на объём обмена и проверяем, нет ли в этом диапазоне цен наших
+// ордеров встречной стороны. Есть — обмен не отправляем вовсе.
+// Возвращает мешающий ордер или null. Нет стакана/списка ордеров — null (не мешаем).
+function selfTradeBlocker(conv, ob, active) {
+  const buying = conv.from.t === 'USDT';            // рыночная ПОКУПКА съедает аски
+  const raw    = (buying ? (ob && ob.a) : (ob && ob.b)) || [];
+  const levels = raw.map(GridCore.parseLevel).filter(Boolean)
+    .sort((x, y) => (buying ? x.price - y.price : y.price - x.price));
+  if (levels.length === 0) return null;
+
+  // Идём от лучшей цены, пока не наберём объём обмена (USDT при покупке, CITRO при
+  // продаже), и запоминаем худшую цену, до которой обмен дошёл бы.
+  let need = conv.from.amt, worst = levels[0].price;
+  for (const lvl of levels) {
+    worst = lvl.price;
+    const take = buying ? lvl.size * lvl.price : lvl.size;
+    if (need <= take) break;
+    need -= take;
+  }
+
+  const side = buying ? 'sell' : 'buy';             // наши ордера встречной стороны
+  return (active || []).find((o) => o.side === side &&
+    (buying ? o.price <= worst + PRICE_EPS : o.price >= worst - PRICE_EPS)) || null;
+}
+
 // Комиссия ОДНОГО исполнения в USDT. Из orders_history комиссия приходит в
 // ПОЛУЧЕННОМ активе: покупка → в CITRO (base) → умножаем на цену; продажа → уже в
 // USDT (quote). Если истории нет — оцениваем по ставке из markets (в USDT).
@@ -194,6 +223,18 @@ async function reconcileBot(bot, ctx, deps) {
 
     if (plan.conversion && !alreadyFunded) {
       const cv = plan.conversion;
+
+      // Наши же ордера на пути обмена → биржа его не исполнит. Не отправляем вовсе.
+      const blocker = selfTradeBlocker(cv, ctx.ob, active);
+      if (blocker) {
+        const msg = 'Обмен невозможен: по цене обмена стоят ваши собственные ордера. Биржа не позволяет торговать с самим собой.';
+        log(`  ✗ ${msg} (мешает ${blocker.side} @ ${blocker.price}, id=${blocker.id})`);
+        await sb(() => supabase.from('bots')
+          .update({ status: 'inactive', status_message: msg, updated_at: new Date().toISOString() })
+          .eq('id', bot.id), { label: 'bots→inactive (обмен: сделка с самим собой)', log }).catch(() => {});
+        return 0;
+      }
+
       const data = cv.from.t === 'USDT'
         ? { symbol: SYMBOL, action: 'buy',  type: 'market', total:  String(engine.floorTo(cv.from.amt, 6)) }
         : { symbol: SYMBOL, action: 'sell', type: 'market', amount: String(engine.floorTo(cv.from.amt, 2)) };
